@@ -152,6 +152,8 @@ def main():
     # a) 首页
     st, html, _ = req("GET", base + "/", raw=True)
     check("首页可打开", st == 200 and "CAS 双云工具".encode() in html)
+    check("首页含目录选择器与保存勾选", all(x in html for x in
+          ["选目录".encode(), b'id="picker"', b'id="savecas"', b"pickerPick", b"loadPicker"]))
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")

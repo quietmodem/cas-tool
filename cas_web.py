@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 LIB_DIR = os.path.join(DATA_DIR, "caslib")
@@ -587,8 +587,16 @@ textarea{min-height:64px}
 <button class="grey" onclick="saveToLib()">存入 cas 库</button>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
-<input id="target189" placeholder="OpenList 目标目录(如 /天翼云盘/电影 或 /移动云盘/电影)">
+<div class="row"><input id="target189" class="grow" placeholder="OpenList 目标目录(如 /天翼云盘/电影 或 /移动云盘/电影)">
+<button class="small grey" onclick="togglePicker()">📁 选目录</button></div>
+<div id="picker" style="display:none">
+<div class="row"><button class="small grey" onclick="pickerUp()">⬆ 上级</button><span class="grow" id="pickerpath">/</span></div>
+<div id="pickerlist"></div>
+<div class="row"><button class="small green" onclick="pickerUse()">✔ 用当前目录</button>
+<button class="small grey" onclick="togglePicker()">关闭</button></div>
+</div>
 <input id="parent139" value="/" placeholder="移动直调时父目录 fileId(根目录填 /)">
+<label class="mut"><input type="checkbox" id="savecas" style="width:auto" checked> 还原时同时把这份 .cas 存入 cas 库</label>
 <button class="green" onclick="doRestore('mobile')">还原到移动(直调139接口)</button>
 <button class="green" onclick="doRestore('tianyi')">还原到天翼(经OpenList)</button>
 <button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录(移动挂载可试)</button>
@@ -650,8 +658,32 @@ async function saveToLib(){
   $('restoremsg').innerHTML = d.ok? '<span class=good>已存入 cas 库: '+esc(d.data.file)+'</span>' : '<span class=err>'+esc(d.msg)+'</span>';
   if(d.ok) loadLib();
 }
+let pickerPath='/';
+function togglePicker(){
+  const p=$('picker'); const show=p.style.display==='none';
+  p.style.display=show?'block':'none'; if(show) loadPicker();
+}
+async function loadPicker(){
+  const d = await api('/api/list?path='+encodeURIComponent(pickerPath));
+  if(!d.ok){ $('pickerlist').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
+  $('pickerpath').textContent=pickerPath;
+  $('pickerlist').innerHTML = d.data.entries.filter(e=>e.is_dir).map(e=>{
+    const p = (pickerPath==='/'?'':pickerPath)+'/'+e.name;
+    return '<div class=row><span class=grow>📁 '+esc(e.name)+'</span>'+
+      '<button class="small" onclick="pickerEnter(\''+esc(p)+'\')">打开</button>'+
+      '<button class="small green" onclick="pickerPick(\''+esc(p)+'\')">选这个</button></div>';
+  }).join('') || '<div class=mut>没有子文件夹</div>';
+}
+function pickerEnter(p){ pickerPath=p; loadPicker(); }
+function pickerUp(){ if(pickerPath!=='/'){ pickerPath=pickerPath.split('/').slice(0,-1).join('/')||'/'; loadPicker(); } }
+function pickerPick(p){ $('target189').value=p; $('picker').style.display='none'; }
+function pickerUse(){ pickerPick(pickerPath); }
 async function doRestore(to){
   if(!curCasB64){ alert('先解析一份 cas'); return; }
+  if($('savecas').checked){
+    const sd = await api('/api/lib/add',{cas_b64:curCasB64});
+    if(sd.ok) loadLib();
+  }
   $('restoremsg').textContent='提交中…';
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   const body = to==='mobile'? {cas_b64:curCasB64,parent:$('parent139').value||'/'}
@@ -692,7 +724,7 @@ function dlLib(f){ location.href='/api/lib/download?name='+encodeURIComponent(f)
 async function delLib(f){ if(!confirm('删除 '+f+' ?'))return; const d=await api('/api/lib/delete',{file:f}); loadLib(); }
 async function libRestore(f,to){
   let body={file:f,to:to};
-  if(to==='tianyi'||to==='openlist'){ const t=prompt('OpenList 目标目录(天翼或移动挂载路径)','/天翼云盘/'); if(!t)return; body.target=t; }
+  if(to==='tianyi'||to==='openlist'){ let t=($('target189').value||'').trim(); if(!t){ t=prompt('OpenList 目标目录(天翼或移动挂载路径)','/天翼云盘/'); if(!t)return; } body.target=t; }
   else { const p=prompt('移动父目录 fileId(根目录 /)','/'); if(p===null)return; body.parent=p; }
   const d = await api('/api/lib/restore',body);
   alert(d.ok? d.msg : '失败: '+d.msg);
