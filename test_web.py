@@ -21,6 +21,7 @@ PATTERN = b"0123456789abcdef"
 CONTENT = (PATTERN * (11534336 // len(PATTERN) + 1))[:11534336]
 FNAME = "测试电影.mkv"
 FPATH = "/天翼云盘/" + FNAME
+SCAN_CAS = None  # main() 里用真实 cas_tool 编码生成
 
 captured = {"put": [], "seed": [], "create139": []}
 
@@ -46,10 +47,20 @@ class MockOL(BaseHTTPRequestHandler):
                            {"name": "移动云盘", "size": 0, "is_dir": True}]
             elif body.get("path") == "/天翼云盘":
                 content = [{"name": FNAME, "size": len(CONTENT), "is_dir": False}]
+            elif body.get("path") == "/扫描":
+                content = [{"name": "a.cas", "size": len(SCAN_CAS), "is_dir": False},
+                           {"name": "视频.mp4", "size": 99, "is_dir": False},
+                           {"name": "子目录", "size": 0, "is_dir": True}]
+            elif body.get("path") == "/扫描/子目录":
+                content = [{"name": "b.cas", "size": len(SCAN_CAS), "is_dir": False}]
             else:
                 content = []
             return self._json({"code": 200, "data": {"content": content, "total": len(content)}})
         if self.path == "/api/fs/get":
+            if str(body.get("path", "")).endswith(".cas"):
+                return self._json({"code": 200, "data": {
+                    "name": "x.cas", "size": len(SCAN_CAS),
+                    "raw_url": "http://127.0.0.1:%d/rawcas" % self.server.server_address[1]}})
             return self._json({"code": 200, "data": {
                 "name": FNAME, "size": len(CONTENT),
                 "raw_url": "http://127.0.0.1:%d/raw" % self.server.server_address[1]}})
@@ -70,6 +81,12 @@ class MockOL(BaseHTTPRequestHandler):
         return self._json({"code": 400})
 
     def do_GET(self):
+        if self.path == "/rawcas":
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(SCAN_CAS)))
+            self.end_headers()
+            self.wfile.write(SCAN_CAS)
+            return
         if self.path == "/raw":
             self.send_response(200)
             self.send_header("Content-Length", str(len(CONTENT)))
@@ -143,6 +160,10 @@ def main():
 
     import cas_tool as ct
     import cas_web
+    global SCAN_CAS
+    SCAN_CAS = ct.encode_cas({
+        "name": "扫描到的影片.mkv", "size": 123456, "md5": "", "sliceMd5": "",
+        "sha256": "b" * 64, "recover_pass": "", "create_time": "1794055893"})
     ct.FILE_CREATE_URL = "http://127.0.0.1:%d/hcy/file/create" % mock_139.server_address[1]
 
     web = ThreadingHTTPServer(("127.0.0.1", 0), cas_web.Handler)
@@ -162,6 +183,8 @@ def main():
     check("首页含新选择器(面包屑/筛选)且无 cas 库", all(x in html for x in
           [b'id="pickerfilter"', b'id="crumbs"', b"renderCrumbs", b"pickerHome"])
           and b"saveToLib" not in html and b'id="lib"' not in html)
+    check("首页含扫描功能与弹窗选择器", all(x in html for x in
+          [b'id="scanpath"', b"/api/scan", b"scanCas", b'class="overlay"', b'class="sheet"']))
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
@@ -278,6 +301,15 @@ def main():
     check("sidecar 存到视频旁边", d["ok"] and len(captured["put"]) == nput + 1
           and urllib.parse.unquote(captured["put"][-1][0]) == "/天翼云盘/中转/" + FNAME + ".cas"
           and captured["put"][-1][1] == sample_bytes, d)
+
+    # m) 扫描目录里的 cas
+    st, d, _ = req("POST", base + "/api/scan", {"path": "/扫描", "recursive": True})
+    check("扫描递归找到 2 份 cas", d["ok"] and len(d["data"]) == 2
+          and sorted(x["cas_name"] for x in d["data"]) == ["a.cas", "b.cas"]
+          and all(x["name"] == "扫描到的影片.mkv" and x["kind"] for x in d["data"])
+          and all(base64.b64decode(x["cas_b64"]) == SCAN_CAS for x in d["data"]), d)
+    st, d, _ = req("POST", base + "/api/scan", {"path": "/扫描", "recursive": False})
+    check("扫描不递归只找到 1 份", d["ok"] and len(d["data"]) == 1, d)
 
     # l) 设置:主目录读写
     st, d, _ = req("GET", base + "/api/settings")

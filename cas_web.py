@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -441,6 +441,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/inspect":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
                 return self.ok(cas_summary(cas_bytes))
+            if path == "/api/scan":
+                return self.api_scan(body)
             if path == "/api/settings":
                 try:
                     return self.ok(save_settings(str(body.get("tianyi_home") or "").strip(),
@@ -523,6 +525,39 @@ class Handler(BaseHTTPRequestHandler):
         t.start()
         return self.ok({"job_id": jid})
 
+    def api_scan(self, body):
+        """扫描指定 OpenList 目录下的 .cas 文件:逐个下载解析,返回可直接还原的清单。"""
+        root = (body.get("path") or "").rstrip("/") or "/"
+        recursive = bool(body.get("recursive", True))
+        found = []
+
+        def walk(dirpath, depth):
+            if len(found) >= 300:
+                return
+            try:
+                entries = ol_list(dirpath)
+            except Exception:  # noqa: BLE001
+                return
+            for e in entries:
+                if len(found) >= 300:
+                    break
+                p = (dirpath.rstrip("/") + "/" + e["name"]) if dirpath != "/" else "/" + e["name"]
+                if e.get("is_dir"):
+                    if recursive and depth < 6:
+                        walk(p, depth + 1)
+                elif e["name"].lower().endswith(".cas") and 0 < (e.get("size") or 0) <= 1024 * 1024:
+                    try:
+                        with ol_download_iter(p) as resp:
+                            data = resp.read()
+                        found.append({"path": p, "cas_name": e["name"],
+                                      "cas_b64": base64.b64encode(data).decode(),
+                                      **cas_summary(data)})
+                    except Exception:  # noqa: BLE001
+                        continue
+
+        walk(root, 0)
+        return self.ok(found)
+
     def api_sidecar(self, body):
         """把 .cas 作为侧车文件存到目标目录里视频旁边:<dir>/<视频名>.cas。"""
         cas_bytes = base64.b64decode(body.get("cas_b64", ""))
@@ -594,6 +629,9 @@ textarea{min-height:64px}
 .crumbs{padding:8px 2px 2px;font-size:14px;line-height:2.1}
 .crumb{color:#0a6cff;background:#e9f1fe;padding:4px 10px;border-radius:8px;cursor:pointer;white-space:nowrap}
 #restorebox>button{display:block;width:100%;margin-top:9px}
+.overlay{position:fixed;inset:0;background:rgba(10,12,20,.45);z-index:50;align-items:flex-start;justify-content:center;padding:5vh 12px 12px}
+.sheet{background:#fff;border-radius:18px;padding:16px;width:100%;max-width:560px;max-height:88vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+@media (prefers-color-scheme:dark){.sheet{background:#1b1b20}}
 </style></head><body><div class="wrap">
 <h1>🗂 CAS 双云工具 <span class="mut" id="ver"></span></h1>
 <div class="card"><div id="status" class="msg">检查连接中…</div></div>
@@ -604,7 +642,7 @@ textarea{min-height:64px}
 <button id="tabbtn-settings" class="tabbtn" onclick="switchTab('settings')">设置</button>
 </div>
 
-<div id="picker" class="card" style="display:none">
+<div id="picker" class="overlay" style="display:none" onclick="if(event.target===this)togglePicker()"><div class="sheet">
 <div class="row"><b class="grow">📁 选择目录</b>
 <button class="small green" onclick="pickerUse()">✔ 用当前目录</button>
 <button class="small grey" onclick="togglePicker()">关闭</button></div>
@@ -613,7 +651,7 @@ textarea{min-height:64px}
 <button class="small grey" onclick="pickerHome('189')">天翼主目录</button>
 <button class="small grey" onclick="pickerHome('139')">移动主目录</button></div>
 <div id="pickerlist"></div>
-</div>
+</div></div>
 
 <div id="tab-restore">
 <div class="card"><h2>还原 .cas</h2>
@@ -632,7 +670,15 @@ textarea{min-height:64px}
 <button class="green" onclick="doRestore('mobile')">还原到移动(直调139接口)</button>
 <button class="green" onclick="doRestore('tianyi')">还原到天翼(经OpenList)</button>
 <button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录</button>
-</div><div id="restoremsg" class="msg"></div></div>
+</div><div id="restoremsg" class="msg"></div>
+<div style="border-top:1px solid #eef0f4;margin-top:14px;padding-top:12px">
+<h2>🔍 扫描网盘目录里的 .cas</h2>
+<div class="row"><input id="scanpath" class="grow" placeholder="要扫描的目录,如 /TV/天翼云盘在线/中转">
+<button class="small grey" onclick="togglePicker('scanpath')">📁 选目录</button>
+<button class="small" onclick="scanCas()">开始扫描</button></div>
+<label class="mut"><input type="checkbox" id="scanrec" style="width:auto" checked> 包含子文件夹(递归最多 6 层,最多取 300 份)</label>
+<div id="scanmsg" class="msg"></div>
+</div></div>
 
 </div>
 
@@ -714,10 +760,25 @@ async function inspectCas(){
 }
 function renderBatch(){
   $('inspect').innerHTML = batchItems.map((it,i)=>
-    it.info? '<div>📄 '+esc(it.info.name)+' <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
+    it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
+      (it.src? '<br><span class=kv>来源: '+esc(it.src)+'</span>':'')+
       '<br><span class=kv>md5: '+esc(it.info.md5||'(空)')+' · sliceMd5: '+esc(it.info.sliceMd5||'(空)')+' · sha256: '+esc(it.info.sha256||'(空)')+'</span></div>'
            : '<div>📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
-  ).join('') + (batchItems.length>1? '<div class=mut>共 '+batchItems.length+' 份 cas</div>':'');
+  ).join('') + (batchItems.length>1? '<div class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</div>':'');
+}
+async function scanCas(){
+  const p=$('scanpath').value.trim();
+  if(!p){ alert('先填要扫描的目录(或点「选目录」)'); return; }
+  $('scanmsg').textContent='扫描中…目录大的话稍等一下';
+  const d=await api('/api/scan',{path:p,recursive:$('scanrec').checked});
+  if(!d.ok){ $('scanmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
+  if(!d.data.length){ $('scanmsg').textContent='这个目录下没找到 .cas 文件'; return; }
+  batchItems = d.data.map(x=>({name:x.cas_name, b64:x.cas_b64, src:x.path,
+    info:{name:x.name, size:x.size, kind:x.kind, md5:x.md5, sliceMd5:x.sliceMd5, sha256:x.sha256}}));
+  renderBatch();
+  $('restorebox').style.display='block';
+  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas,已列入上方待还原列表</span> —— 勾选要还原的,选好目标目录,再点上面的还原按钮';
+  $('inspect').scrollIntoView({behavior:'smooth',block:'center'});
 }
 function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }
 let pickerPath='/', pickerTarget='target189';
@@ -750,7 +811,7 @@ function togglePicker(targetId){
   if(targetId) pickerTarget=targetId;
   const p=$('picker'); const show=p.style.display==='none';
   if(show && targetId){ pickerPath = ($(pickerTarget).value||'').trim() || '/'; }
-  p.style.display=show?'block':'none'; if(show) loadPicker();
+  p.style.display=show?'flex':'none'; if(show) loadPicker();
 }
 let pickerDirs=[];
 async function loadPicker(){
@@ -793,6 +854,8 @@ async function doRestore(to){
   for(let i=0;i<batchItems.length;i++){
     const it=batchItems[i];
     if(!it.info){ badN++; continue; }
+    const chk=document.querySelector('.itchk[data-i="'+i+'"]');
+    if(chk && !chk.checked){ continue; }
     setSt(i,'还原中…','mut');
     const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||'/'}
                               : {cas_b64:it.b64,cas_name:it.name,target:target};
