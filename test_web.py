@@ -518,6 +518,8 @@ def main():
           and captured["complete139"], job and job["result"])
     check("生成结果带推送按钮", b"pushGenToRestore" in html and b"upback139" in html)
     check("还原区有清空按钮", b"clearRestore" in html)
+    check("类型不匹配有预警", b"casWarnFor" in html and b"warn139" in html)
+    check("移动所选只写地址栏", b"pick139label" not in html and b"picked139Path" in html)
 
     # t) 移动密码登录回退(移植 OpenList 139 驱动的机制)
     check("AES NIST 向量(ECB-128)",
