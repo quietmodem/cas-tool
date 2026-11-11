@@ -25,7 +25,8 @@ FNAME = "测试电影.mkv"
 FPATH = "/天翼云盘/" + FNAME
 SCAN_CAS = None  # main() 里用真实 cas_tool 编码生成
 
-captured = {"put": [], "seed": [], "create139": [], "put139": b"", "complete139": None}
+captured = {"put": [], "seed": [], "create139": [], "put139": b"", "complete139": None,
+            "mkdir": []}
 
 
 class MockOL(BaseHTTPRequestHandler):
@@ -78,6 +79,9 @@ class MockOL(BaseHTTPRequestHandler):
             return self._json({"code": 200, "data": {
                 "name": FNAME, "size": len(CONTENT),
                 "raw_url": "http://127.0.0.1:%d/raw" % self.server.server_address[1]}})
+        if self.path == "/api/fs/mkdir":
+            captured["mkdir"].append(body.get("path"))
+            return self._json({"code": 200, "data": {}})
         if self.path == "/api/fs/seed/capabilities":
             captured["seed"].append(("capabilities", body))
             return self._json({"code": 200, "data": {"method": "189pc_cas"}})
@@ -367,7 +371,7 @@ def main():
     check("首页含扫描功能与弹窗选择器", all(x in html for x in
           [b'id="scanpath"', b"/api/scan", b"scanCas", b'class="overlay"', b'class="sheet"']))
     check("首页含扫描独立列表与后台配置区", all(x in html for x in
-          [b"renderScan", b"scanRestore", b'id="scanlist"', b'id="cfgurl"', b'id="cfgtoken"', b'id="cfgpw"']))
+          [b"renderScan", b"pushScanToRestore", b'id="scanlist"', b'id="cfgurl"', b'id="cfgtoken"', b'id="cfgpw"']))
     check("首页含云盘路径校验", all(x in html for x in
           [b'id="paths189"', b"cloudPathSet", b"inCloud", b"itemCloud"])
           and b'id="paths139"' not in html)
@@ -623,6 +627,16 @@ def main():
     check("填入移动后地址栏有显示", "'移动云盘:'+nm" in html)
     check("生成页天翼根归一", "function tianyiRoots()" in html
           and "genEnterRoot" in html and "m139EnterRoot" in html)
+
+    # bb) v2.5.0:新建目录(双云)+ 扫描推送 + 拖拽区
+    st, d, _ = req("POST", base + "/api/mkdir", {"path": "/TV/天翼云盘在线/新目录"})
+    check("OpenList 新建目录", d["ok"] and captured["mkdir"][-1] == "/TV/天翼云盘在线/新目录", d)
+    st, d, _ = req("POST", base + "/api/m139/mkdir", {"parent": "D1", "name": "新目录"})
+    lp = captured["create139"][-1][1]
+    check("139 新建目录", d["ok"] and lp.get("type") == "folder"
+          and lp.get("name") == "新目录" and lp.get("parentFileId") == "D1", d)
+    check("扫描推送与拖拽区存在", "pushScanToRestore" in html and "dropzone" in html
+          and "scanRestore" not in html)
     hdrs, payload = [c for c in captured["create139"]
                      if str(c[1].get("name") or "").endswith(".mkv")][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==

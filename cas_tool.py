@@ -476,6 +476,14 @@ def upload_139_bytes(basic, parent_id, name, data):
     return {"fileId": resp.get("fileId") or "", "exist": False}
 
 
+def mkdir_139(basic, parent_id, name):
+    """在 139 里新建文件夹(照 OpenList 139 驱动 MakeDir:file/create type=folder)。"""
+    return personal_call(basic, FILE_CREATE_URL, {
+        "parentFileId": parent_id or "/", "name": name,
+        "description": "", "type": "folder",
+        "fileRenameMode": "force_rename"})
+
+
 def build_139_part_infos(size: int, part_size: int = 100 * MIB):
     """秒传探测用的分片计划: 100MiB 一片(命中与否只看 contentHash,
     分片计划仅在未命中、真要上传时才有意义;本工具不上传本体)。"""

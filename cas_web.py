@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.4.2"
+VERSION = "2.5.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -814,6 +814,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.ok({"found": found})
             if path == "/api/sidecar":
                 return self.api_sidecar(body)
+            if path == "/api/mkdir":
+                p = str(body.get("path") or "").strip()
+                if not p.startswith("/") or p == "/":
+                    return self.fail("目录路径不对")
+                ol_post("/fs/mkdir", {"path": p})
+                return self.ok({"path": p})
+            if path == "/api/m139/mkdir":
+                nm = str(body.get("name") or "").strip()
+                if not nm or "/" in nm:
+                    return self.fail("目录名不对")
+                data = ct.mkdir_139(m139_basic(),
+                                    str(body.get("parent") or "/").strip() or "/",
+                                    nm)
+                return self.ok({"fileId": data.get("fileId") or ""})
             if path == "/api/m139/scan":
                 return self.api_m139_scan(body)
             if path == "/api/m139/relogin":
@@ -1018,10 +1032,10 @@ class Handler(BaseHTTPRequestHandler):
 LOGIN_HTML = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>CAS 工具 · 登录</title><style>
-body{font-family:-apple-system,system-ui,sans-serif;margin:0;background:#f2f2f7;color:#111}
+body{font-family:-apple-system,system-ui,sans-serif;margin:0;background:#f7f5ef;color:#1c1c1a}
 .wrap{max-width:420px;margin:15vh auto;padding:20px}
 input,button{width:100%;box-sizing:border-box;font-size:17px;padding:13px;border-radius:10px;border:1px solid #c7c7cc;margin-top:10px}
-button{background:#0a6cff;color:#fff;border:none;font-weight:600}
+button{background:#1c1c1a;color:#fdfcf8;border:none;font-weight:600}
 </style></head><body><div class="wrap"><h2>🔐 CAS 双云工具</h2>
 <input id="pw" type="password" placeholder="访问口令" autocomplete="current-password">
 <button onclick="login()">进入</button><p id="m" style="color:#c00"></p></div>
@@ -1040,39 +1054,42 @@ INDEX_HTML = r"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>CAS 双云工具</title><style>
 :root{color-scheme:light dark}
 *{box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;background:#eceef3;color:#111;-webkit-tap-highlight-color:transparent}
-@media (prefers-color-scheme:dark){body{background:#0b0b0f;color:#eee}.card{background:#1b1b20!important;box-shadow:none!important}input,textarea,select{background:#26262c!important;color:#eee;border-color:#3a3a42!important}.tabbar{background:#26262c!important}.tabbtn{color:#aaa!important}.tabbtn.on{background:#3a3a42!important;color:#fff!important;box-shadow:none!important}button.grey{background:#33333a!important;color:#eee!important}.crumb{background:#22314d!important}.row{border-color:#2c2c33!important}.dirrow:active{background:#22314d!important}}
-.wrap{max-width:720px;margin:0 auto;padding:14px 14px 48px}
-h1{font-size:21px;margin:10px 2px 0;font-weight:700;letter-spacing:.2px}
-h2{font-size:15px;margin:0 0 10px;font-weight:600}
-.card{background:#fff;border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 2px 12px rgba(25,35,70,.07)}
-button{font-size:15px;padding:11px 16px;border-radius:12px;border:none;background:#0a6cff;color:#fff;font-weight:600;min-height:46px;cursor:pointer}
-button:active{opacity:.7}
-button.grey{background:#e8eaf0;color:#222}button.green{background:#2fae4e}button.red{background:#e5484d}
-button.small{padding:7px 12px;min-height:38px;font-size:13px;border-radius:10px}
-input,textarea{width:100%;font-size:16px;padding:11px 12px;border-radius:12px;border:1.5px solid #d9dde6;margin:6px 0;background:#fcfdff;outline:none}
-input:focus,textarea:focus{border-color:#0a6cff}
+body{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;background:#f7f5ef;color:#1c1c1a;-webkit-tap-highlight-color:transparent}
+.wrap{max-width:720px;margin:0 auto;padding:18px 16px 56px}
+h1{font-family:Georgia,'Songti SC','STSong',serif;font-size:24px;margin:4px 2px 0;font-weight:700;letter-spacing:.5px;border-bottom:3px double #1c1c1a;padding-bottom:10px}
+h2{font-size:15px;margin:0 0 10px;font-weight:700;letter-spacing:.4px}
+.card{background:#fff;border:1px solid #e5e1d5;border-radius:8px;padding:18px;margin:14px 0;box-shadow:0 1px 3px rgba(60,50,20,.05)}
+button{font-size:15px;padding:11px 16px;border-radius:8px;border:1px solid transparent;background:#1c1c1a;color:#fdfcf8;font-weight:600;min-height:46px;cursor:pointer}
+button:active{opacity:.75}
+button.grey{background:#f1eee5;color:#1c1c1a;border-color:#ddd8c8}
+button.green{background:#177245;color:#fff}
+button.red{background:#c62f3b;color:#fff}
+button.small{padding:7px 12px;min-height:36px;font-size:13px;border-radius:7px}
+input,textarea,select{width:100%;box-sizing:border-box;font-size:16px;padding:11px 12px;border-radius:8px;border:1px solid #d8d3c1;margin:6px 0;background:#fff;outline:none}
+input:focus,textarea:focus,select:focus{border-color:#177245;box-shadow:0 0 0 3px rgba(23,114,69,.13)}
 textarea{min-height:64px}
-.row{display:flex;align-items:center;gap:9px;padding:9px 2px;border-bottom:1px solid #eef0f4}
+.row{display:flex;align-items:center;gap:9px;padding:9px 2px;border-bottom:1px solid #f0ede2}
 .row .grow{flex:1;min-width:0;word-break:break-all}
-.dirrow{cursor:pointer;border-radius:10px}
-.dirrow:active{background:#eef4ff}
-.bar{height:8px;background:#e5e5ea;border-radius:4px;overflow:hidden;margin-top:6px}
-.bar>i{display:block;height:100%;background:#0a6cff}
-.mut{color:#8e8e93;font-size:13px}
-.msg{white-space:pre-wrap;word-break:break-all;font-size:14px;margin-top:8px}
-.err{color:#e5484d}.good{color:#248a3d}
-.kv{font-size:13px;color:#666;word-break:break-all}
-.tabbar{position:sticky;top:10px;z-index:6;display:flex;gap:4px;background:#dde1e9;padding:4px;border-radius:14px;margin:14px 0 2px}
-.tabbtn{flex:1;background:transparent;color:#5a5f6a;border-radius:11px;min-height:42px;box-shadow:none}
-.tabbtn.on{background:#fff;color:#111;box-shadow:0 1px 5px rgba(0,0,0,.14)}
+.dirrow{cursor:pointer;border-radius:6px}
+.dirrow:active{background:#f2f6f0}
+.bar{height:8px;background:#e9e6da;border-radius:4px;overflow:hidden;margin-top:6px}
+.bar>i{display:block;height:100%;background:#177245}
+.mut{color:#8a8577;font-size:13px}
+.msg{white-space:pre-wrap;word-break:break-all;font-size:14px;margin-top:8px;line-height:1.55}
+.err{color:#c62f3b}.good{color:#177245}
+.kv{font-size:13px;color:#6d675a;word-break:break-all}
+.tabbar{position:sticky;top:10px;z-index:6;display:flex;gap:4px;background:#eae7db;padding:4px;border-radius:9px;margin:14px 0 2px}
+.tabbtn{flex:1;background:transparent;color:#6d675a;border:none;border-radius:7px;min-height:42px;box-shadow:none}
+.tabbtn.on{background:#fff;color:#1c1c1a;box-shadow:0 1px 4px rgba(60,50,20,.16)}
 .crumbs{padding:8px 2px 2px;font-size:14px;line-height:2.1}
-.crumb{color:#0a6cff;background:#e9f1fe;padding:4px 10px;border-radius:8px;cursor:pointer;white-space:nowrap}
+.crumb{color:#177245;background:#edf3ec;padding:4px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}
 #restorebox>button{display:block;width:100%;margin-top:9px}
-.overlay{position:fixed;inset:0;background:rgba(10,12,20,.45);z-index:50;align-items:flex-start;justify-content:center;padding:5vh 12px 12px}
-.sheet{background:#fff;border-radius:18px;padding:16px;width:100%;max-width:560px;max-height:88vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.25)}
-@media (prefers-color-scheme:dark){.sheet{background:#1b1b20}}
 #scanbtns>button{display:block;width:100%;margin-top:9px}
+.dropzone{border:1.5px dashed #c9c2ab;border-radius:8px;padding:20px 14px;text-align:center;color:#6d675a;background:#fbfaf5;cursor:pointer;margin:6px 0}
+.dropzone.drag{border-color:#177245;background:#eef5ee;color:#177245}
+.overlay{position:fixed;inset:0;background:rgba(22,20,14,.46);z-index:50;align-items:flex-start;justify-content:center;padding:5vh 12px 12px}
+.sheet{background:#fff;border-radius:12px;padding:18px;width:100%;max-width:560px;max-height:88vh;overflow:auto;box-shadow:0 16px 48px rgba(0,0,0,.28)}
+@media (prefers-color-scheme:dark){body{background:#141412;color:#ece9df}.card{background:#1f1f1d!important;border-color:#35342c!important;box-shadow:none!important}h1{border-bottom-color:#ece9df}input,textarea,select{background:#28281f!important;color:#ece9df;border-color:#403f35!important}.tabbar{background:#28281f!important}.tabbtn{color:#a49d8a!important}.tabbtn.on{background:#3b3a30!important;color:#fff!important;box-shadow:none!important}button{background:#ece9df;color:#141412}button.grey{background:#33322a!important;color:#ece9df!important;border-color:#48473c!important}button.green{background:#1e8a52!important;color:#fff!important}.crumb{background:#22301f!important;color:#a5d3b2!important}.row{border-color:#2d2d28!important}.dirrow:active{background:#22301f!important}.sheet{background:#1f1f1d}.dropzone{background:#22221c;border-color:#4a493e;color:#a49d8a}}
 button:disabled{opacity:.35}
 </style></head><body><div class="wrap">
 <h1>🗂 CAS 双云工具 <span class="mut" id="ver"></span></h1>
@@ -1095,18 +1112,19 @@ button:disabled{opacity:.35}
 <div class="row"><input id="pickerfilter" class="grow" placeholder="筛选本层文件夹…" oninput="renderPicker()">
 <button class="small grey" id="ph189" onclick="pickerHome('189')">天翼挂载目录</button></div>
 <div id="pickerlist"></div>
+<div class="row"><button class="small grey" onclick="mkdirHere('189')">＋ 新建目录</button></div>
 </div>
 <div id="pane139" style="display:none">
 <div id="p139crumbs" class="crumbs"></div>
 <div id="p139list"></div>
-<div class="row"><button class="small grey" onclick="p139SaveDir()">＋ 把当前目录存到设置</button></div>
+<div class="row"><button class="small grey" onclick="mkdirHere('139')">＋ 新建目录</button><button class="small grey" onclick="p139SaveDir()">＋ 把当前目录存到设置</button></div>
 </div>
 </div></div>
 
 <div id="tab-restore">
 <div class="card"><h2>还原 CAS</h2>
-<input type="file" id="casfile" accept=".cas,.txt,.zip" multiple>
-<div class="mut">可多选 .cas,也可选含多个 .cas 的 .zip 压缩包</div>
+<input type="file" id="casfile" accept=".cas,.txt,.zip" multiple hidden onchange="inspectCas()">
+<div id="dropzone" class="dropzone" onclick="$('casfile').click()">📥 把 .cas / .zip 拖到这里,或点击选择文件(可多选)</div>
 <textarea id="castext" placeholder="或把 .cas 的内容(Base64 文本)粘贴到这里"></textarea>
 <button onclick="inspectCas()">解析</button>
 <div id="inspect" class="msg"></div>
@@ -1133,8 +1151,7 @@ button:disabled{opacity:.35}
 <div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选</button>
 <button class="small grey" onclick="scanCheckAll(false)">全不选</button>
 <span class="mut">目标目录用上方还原区</span></div>
-<button class="green" id="sBtnTy" onclick="scanRestore('tianyi')">还原到天翼云盘</button>
-<button class="green" id="sBtnMb" onclick="scanRestore('mobile')">还原到移动云盘</button>
+<button class="green" onclick="pushScanToRestore()">⬆ 推送到还原区</button>
 <div id="scanrestoremsg" class="msg"></div>
 </div>
 </div></div>
@@ -1237,10 +1254,11 @@ async function status(){
 }
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();
   r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file);});}
-let batchItems=[];
+let batchItems=[], dropFiles=null;
 async function collectItems(){
   const items=[];
-  for(const f of $('casfile').files){
+  const fl = dropFiles || $('casfile').files; dropFiles=null;
+  for(const f of fl){
     if(/\.zip$/i.test(f.name)){
       const d = await api('/api/unzipcas',{zip_b64:await fileToB64(f)});
       if(!d.ok) throw new Error(f.name+': '+d.msg);
@@ -1304,15 +1322,30 @@ function renderScan(){ setTimeout(refreshBtns, 0);
 }
 function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>c.checked=v); refreshBtns(); }
 function scanSetSt(i,txt,cls){ const el=$('sst'+i); if(el){ el.textContent=txt; el.className=cls; } }
-async function scanRestore(to){
-  const items=[], idx=[];
-  scanItems.forEach((it,i)=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); if(c && c.checked){ items.push(it); idx.push(i); } });
-  if(!items.length){ alert('先在扫描列表里勾选要还原的 cas'); return; }
-  const r = await restoreCore(to, items, (j,txt,cls)=>scanSetSt(idx[j],txt,cls));
-  if(!r){ $('scanrestoremsg').innerHTML='已取消还原'; return; }
-  $('scanrestoremsg').innerHTML='还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标: '+(to==='mobile'? '移动云盘' : esc(r.target))+')';
+function pushScanToRestore(){
+  const picked=[];
+  scanItems.forEach((it,i)=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); if(c && c.checked) picked.push(it); });
+  if(!picked.length){ alert('先在扫描列表里勾选要还原的 cas'); return; }
+  let added=0;
+  for(const it of picked){
+    if(batchItems.some(b=>b.b64===it.b64)) continue;
+    batchItems.push({name:it.name, b64:it.b64, src:it.src, info:it.info});
+    added++;
+  }
+  renderBatch();
+  $('restorebox').style.display='block';
+  refreshBtns();
+  $('scanrestoremsg').innerHTML='<span class=good>已推送 '+added+' 份到还原区</span>'
+    +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'')
+    +' —— 往上拉,选好目标目录后点还原';
+  window.scrollTo({top:0, behavior:'smooth'});
 }
 function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }
+const dz=$('dropzone');
+['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{ e.preventDefault(); dz.classList.add('drag'); }));
+['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{ e.preventDefault(); dz.classList.remove('drag'); }));
+dz.addEventListener('drop',e=>{ const fs=e.dataTransfer.files; if(fs && fs.length){ dropFiles=fs; inspectCas(); } });
+['dragover','drop'].forEach(ev=>window.addEventListener(ev,e=>e.preventDefault()));
 let pickerPath='/', pickerTarget='target189', pickerScope=null;
 function switchTab(name){
   for(const n of ['restore','gen','settings']){
@@ -1545,6 +1578,23 @@ async function p139SaveDir(){
   if(d.ok){ SETTINGS.mobile_dirs=dirs; const el=$('dirs139'); if(el) el.value=dirs.map(x=>(x.name? x.name+' = ':'')+x.id).join('\n'); alert('已存到设置「移动云盘目录」'); }
   else alert(d.msg);
 }
+async function mkdirHere(cloud){
+  let name = prompt('新目录名');
+  if(name===null) return;
+  name = name.trim();
+  if(!name || name.includes('/')){ alert('目录名不能为空,也不能带 /'); return; }
+  if(cloud==='189'){
+    if(pickerScope && !pickerScope.base){ alert('先进入一个挂载目录'); return; }
+    const p = (pickerPath==='/'?'':pickerPath)+'/'+name;
+    const d = await api('/api/mkdir',{path:p});
+    if(d.ok) loadPicker(); else alert(d.msg);
+  } else {
+    if(!p139Stack.length){ alert('先进入一个目录'); return; }
+    const cur=p139Stack[p139Stack.length-1];
+    const d = await api('/api/m139/mkdir',{parent:cur.id, name:name});
+    if(d.ok) load139Pane(); else alert(d.msg);
+  }
+}
 function pickerUse(){
   if(pickerCloud==='139'){
     if(!p139Stack.length){ alert('先进入一个目录'); return; }
@@ -1584,7 +1634,6 @@ function applyBtns(ty, mb, s){
 }
 function refreshBtns(){
   applyBtns($('btnTy'), $('btnMb'), kindsOf(batchItems, i=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); return c? c.checked : true; }));
-  applyBtns($('sBtnTy'), $('sBtnMb'), kindsOf(scanItems, i=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); return c? c.checked : false; }));
 }
 function itemCloud(it){
   const k=(it.info&&it.info.kind)||'';
