@@ -119,6 +119,11 @@ class MockOL(BaseHTTPRequestHandler):
 
 
 M139_FILE = "139测试.mkv"
+MOCK_CAS_BYTES = ct.encode_cas({
+    "name": "奥德赛.2026.2160p.V2.BluRay.REMUX.HDR10.10bit.H.265.DTS.5.1.mkv",
+    "size": 88188041773, "md5": "", "sliceMd5": "",
+    "sha256": "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775",
+    "recover_pass": "", "create_time": "1794055893"})
 M139_LOGIN = {"step1": 0, "step2": 0, "step3": 0, "refresh": 0,
               "refresh_ok": True, "step1_pw_ok": False, "step3_plain": {}}
 
@@ -143,6 +148,12 @@ class Mock139(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(CONTENT)))
             self.end_headers()
             self.wfile.write(CONTENT)
+            return
+        if self.path == "/raw139cas":
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(MOCK_CAS_BYTES)))
+            self.end_headers()
+            self.wfile.write(MOCK_CAS_BYTES)
             return
         self.send_response(404)
         self.end_headers()
@@ -214,7 +225,9 @@ class Mock139(BaseHTTPRequestHandler):
                           "type": "file"}]
             elif parent == "D1":
                 items = [{"fileId": "F139B", "name": "子文件.mkv",
-                          "size": len(CONTENT), "type": "file"}]
+                          "size": len(CONTENT), "type": "file"},
+                         {"fileId": "CAS1", "name": "样本.cas",
+                          "size": len(MOCK_CAS_BYTES), "type": "file"}]
             else:
                 items = []
             data = json.dumps({"code": "0000", "data": {"items": items,
@@ -226,7 +239,10 @@ class Mock139(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if self.path == "/hcy/file/getDownloadUrl":
-            url = "http://127.0.0.1:%d/raw139" % self.server.server_address[1]
+            fid = (json.loads(raw) or {}).get("fileId")
+            url = "http://127.0.0.1:%d/%s" % (
+                self.server.server_address[1],
+                "raw139cas" if fid == "CAS1" else "raw139")
             data = json.dumps({"code": "0000", "data": {"url": url}}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -581,6 +597,22 @@ def main():
     check("旁存 complete 已调",
           (captured.get("complete139") or {}).get("fileId") == "CASF1",
           captured.get("complete139"))
+
+    # y) v2.4.0:移动多目录设置 + 139 直连扫描 .cas
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"mobile_dirs_text": "中转 = DIRID-001\nDIRID-002\n坏行 = \n"})
+    st, d, _ = req("GET", base + "/api/settings")
+    dirs = d["data"].get("mobile_dirs") or []
+    check("移动多目录往返", len(dirs) == 2 and dirs[0]["id"] == "DIRID-001"
+          and dirs[0]["name"] == "中转" and dirs[1]["id"] == "DIRID-002", dirs)
+    st, d, _ = req("POST", base + "/api/m139/scan", {"parent": "/", "recursive": True})
+    names = [x["cas_name"] for x in d["data"]] if d["ok"] else []
+    check("139 直连扫描找到 cas", d["ok"] and "样本.cas" in names, d)
+    it0 = [x for x in d["data"] if x["cas_name"] == "样本.cas"][0]
+    check("139 扫描条目可解析", it0["kind"].startswith("mobile")
+          and it0["path"].startswith("移动云盘"), it0)
+    st, d, _ = req("POST", base + "/api/m139/scan", {"parent": "D1", "recursive": False})
+    check("139 扫描指定目录", d["ok"] and len(d["data"]) == 1, d)
     hdrs, payload = [c for c in captured["create139"]
                      if str(c[1].get("name") or "").endswith(".mkv")][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
