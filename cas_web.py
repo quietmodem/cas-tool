@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.6.2"
+VERSION = "2.6.3"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -398,7 +398,7 @@ def restore_139(cas_bytes, parent="/"):
     obj = ct.decode_cas_bytes(cas_bytes)
     sha = str(obj.get("sha256", "")).strip().lower()
     if not sha:
-        return False, "这份 .cas 没有 sha256(是天翼版),不能还原到移动"
+        return False, "该 .cas 不含 sha256(天翼版),无法还原到移动云盘"
     try:
         basic = m139_basic()
     except Exception as e:  # noqa: BLE001
@@ -432,14 +432,14 @@ def restore_139(cas_bytes, parent="/"):
     has_upload = any(isinstance(p, dict) and p.get("uploadUrl") for p in ret_parts)
     if data.get("exist") is True or (data.get("fileId") and not has_upload):
         return True, "✓ 秒传命中:《%s》已还原到移动云盘" % name
-    return False, ("文件不存在于云端,无法秒传(移动云盘没有 sha256=%s... "
-                   "的现成文件;这份 cas 本身没问题,是云端没有源)" % sha[:16])
+    return False, ("文件不存在于云端,无法秒传(移动云盘未找到 "
+                   "sha256=%s... 对应的文件)" % sha[:16])
 
 
 def restore_189(cas_bytes, cas_name, target):
     obj = ct.decode_cas_bytes(cas_bytes)
     if not str(obj.get("md5", "")).strip():
-        return False, "这份 .cas 没有 md5(是移动版),不能还原到天翼"
+        return False, "该 .cas 不含 md5(移动版),无法还原到天翼云盘"
     return restore_openlist(cas_bytes, cas_name, target)
 
 
@@ -909,10 +909,10 @@ class Handler(BaseHTTPRequestHandler):
                     cfg = _m139_cfg()
                     exp = ct.auth_expiry_ms(cfg["auth"]) if cfg["auth"] else None
                     if exp and exp > int(time.time() * 1000):
-                        return self.ok({"msg": "这次没刷新成功(%s);但现有授权"
-                                               "有效到 %s,暂时不受影响。填好上方"
-                                               "密码登录回退三项并保存后,再点刷新"
-                                               "就能自动续期"
+                        return self.ok({"msg": "本次刷新未成功(%s);现有授权"
+                                               "有效到 %s,暂不受影响。请填写上方"
+                                               "密码登录回退三项并保存后,再执行"
+                                               "刷新以自动续期"
                                                % (str(e)[:140],
                                                   _auth_expiry_text(cfg["auth"]))})
                     return self.fail(str(e))
@@ -1409,13 +1409,13 @@ function renderBatch(){
 let scanItems=[], scanSrc='ol', scan139=null;
 async function scanCas(){
   let d;
-  $('scanmsg').textContent='扫描中…目录大的话稍等一下';
+  $('scanmsg').textContent='扫描中,请稍候';
   $('scanbtns').style.display='none';
   if(scanSrc==='139' && scan139){
     d=await api('/api/m139/scan',{parent:scan139.id,recursive:$('scanrec').checked});
   } else {
     const p=$('scanpath').value.trim();
-    if(!p){ alert('先填要扫描的目录(或点「选目录」)'); return; }
+    if(!p){ alert('请先填写要扫描的目录(或点「选目录」)'); return; }
     d=await api('/api/scan',{path:p,recursive:$('scanrec').checked});
   }
   if(!d.ok){ $('scanmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
@@ -1425,7 +1425,7 @@ async function scanCas(){
   renderScan();
   $('restorebox').style.display='block';
   $('scanbtns').style.display='block';
-  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas</span> —— 在下面列表里勾选要还原的,再点「还原选中的」按钮';
+  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas</span> —— 在列表中勾选后,点「推送到还原区」';
 }
 function renderScan(){ setTimeout(refreshBtns, 0);
   $('scanlist').innerHTML = scanItems.map((it,i)=>
@@ -1437,7 +1437,7 @@ function scanSetSt(i,txt,cls){ const el=$('sst'+i); if(el){ el.textContent=txt; 
 function pushScanToRestore(){
   const picked=[];
   scanItems.forEach((it,i)=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); if(c && c.checked) picked.push(it); });
-  if(!picked.length){ alert('先在扫描列表里勾选要还原的 cas'); return; }
+  if(!picked.length){ alert('请先在扫描列表中勾选 cas'); return; }
   let added=0;
   for(const it of picked){
     if(batchItems.some(b=>b.b64===it.b64)) continue;
@@ -1449,7 +1449,7 @@ function pushScanToRestore(){
   refreshBtns();
   $('scanrestoremsg').innerHTML='<span class=good>已推送 '+added+' 份到还原区</span>'
     +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'')
-    +' —— 往上拉,选好目标目录后点还原';
+    +' —— 请在上方还原区选择目标目录后执行还原';
   window.scrollTo({top:0, behavior:'smooth'});
 }
 function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }
@@ -1529,18 +1529,18 @@ function checkedKinds(){
 }
 function casWarnFor(cloud){
   const s=checkedKinds(); if(!s.size) return '';
-  if(cloud==='139' && !s.has('139') && !s.has('both')) return '选中的是天翼版 cas,只能还原到天翼云盘,移动云盘还原不了';
-  if(cloud==='189' && !s.has('189') && !s.has('both')) return '选中的是移动版 cas,只能还原到移动云盘,天翼云盘还原不了';
+  if(cloud==='139' && !s.has('139') && !s.has('both')) return '所选 cas 为天翼版,仅可还原到天翼云盘';
+  if(cloud==='189' && !s.has('189') && !s.has('both')) return '所选 cas 为移动版,仅可还原到移动云盘';
   return '';
 }
 function fillHome(which){
   const w = casWarnFor('189'); if(w){ alert('⚠ '+w); return; }
   const v = SETTINGS.tianyi_home;
-  if(v){ $('target189').value=v; $('parent139').value=''; picked139Path=''; } else { alert('还没设置挂载目录,先到「设置」页设置'); }
+  if(v){ $('target189').value=v; $('parent139').value=''; picked139Path=''; } else { alert('未设置挂载目录,请先在「设置」页配置'); }
 }
 function goHome(which){
   const v = SETTINGS.tianyi_home;
-  if(v){ genRoot=v; curPath=v; loadList(); } else { alert('还没设置挂载目录,先到「设置」页设置'); }
+  if(v){ genRoot=v; curPath=v; loadList(); } else { alert('未设置挂载目录,请先在「设置」页配置'); }
 }
 let pickerCloud='189', p139Stack=[], p139Items=[], picked139Path='';
 function tianyiRoots(){
@@ -1656,7 +1656,7 @@ function renderPicker(){
     const p=(pickerPath==='/'?'':pickerPath)+'/'+e.name;
     return '<div class="row dirrow" onclick="pickerEnter(\''+esc(p)+'\')"><span>📁</span><span class="grow">'+esc(e.name)+'</span>'+
       '<button class="small green" onclick="event.stopPropagation();pickerPick(\''+esc(p)+'\')">选这个</button></div>';
-  }).join('') : '<div class="mut" style="padding:8px 2px">'+(q?'没有匹配的文件夹':'这一层没有文件夹,点上面「✔ 用当前目录」就是它')+'</div>';
+  }).join('') : '<div class="mut" style="padding:8px 2px">'+(q?'没有匹配的文件夹':'当前层级无子文件夹,可点「✔ 用当前目录」确认')+'</div>';
 }
 function pickerGo(p){
   if(pickerScope && pickerScope.base){
@@ -1670,7 +1670,7 @@ function pickerUp(){
   if(pickerScope && pickerScope.base && pickerPath===pickerScope.base){ pickerToChoice(); return; }
   if(pickerPath && pickerPath!=='/') pickerGo(pickerPath.split('/').slice(0,-1).join('/')||'/');
 }
-function pickerHome(which){ const v=SETTINGS.tianyi_home; if(v){ pickerGo(v); } else alert('还没设置挂载目录,先到「设置」页设置'); }
+function pickerHome(which){ const v=SETTINGS.tianyi_home; if(v){ pickerGo(v); } else alert('未设置挂载目录,请先在「设置」页配置'); }
 function pickerPick(p){
   if(pickerTarget.indexOf('append:')===0){
     const ta=$(pickerTarget.slice(7));
@@ -1695,13 +1695,13 @@ async function load139Pane(){
   if(!d.ok){ box.innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
   p139Items=d.data.items.filter(e=>e.is_dir);
   box.innerHTML = '<div class=row><button class="small grey" onclick="p139Up()">⬆ 上一级</button></div>'
-    + (p139Items.map((e,i)=>'<div class="row dirrow" onclick="p139Down('+i+')"><span>📁</span><span class="grow">'+esc(e.name)+'</span></div>').join('') || '<div class="mut" style="padding:8px 2px">没有子文件夹,点「✔ 用当前目录」就是它</div>');
+    + (p139Items.map((e,i)=>'<div class="row dirrow" onclick="p139Down('+i+')"><span>📁</span><span class="grow">'+esc(e.name)+'</span></div>').join('') || '<div class="mut" style="padding:8px 2px">当前目录无子文件夹,可点「✔ 用当前目录」确认</div>');
 }
 function p139EnterRoot(i){ const r=pickerRoots139()[i]; p139Stack=[{id:r.id,name:r.name}]; load139Pane(); }
 function p139Down(i){ const e=p139Items[i]; p139Stack.push({id:e.id,name:e.name}); load139Pane(); }
 function p139Up(){ p139Stack.pop(); load139Pane(); }
 async function p139SaveDir(){
-  if(!p139Stack.length){ alert('先进入一个目录'); return; }
+  if(!p139Stack.length){ alert('请先进入一个目录'); return; }
   const cur=p139Stack[p139Stack.length-1];
   const dirs=(SETTINGS.mobile_dirs||[]).slice();
   if(dirs.some(d=>d.id===cur.id)){ alert('这个目录已在设置里'); return; }
@@ -1716,7 +1716,7 @@ async function mkdirHere(cloud){
   name = name.trim();
   if(!name || name.includes('/')){ alert('目录名不能为空,也不能带 /'); return; }
   if(cloud==='189'){
-    if(pickerScope && !pickerScope.base){ alert('先进入一个挂载目录'); return; }
+    if(pickerScope && !pickerScope.base){ alert('请先进入一个挂载目录'); return; }
     const p = (pickerPath==='/'?'':pickerPath)+'/'+name;
     const d = await api('/api/mkdir',{path:p});
     if(d.ok) loadPicker(); else alert(d.msg);
@@ -1879,7 +1879,7 @@ async function genCas139(i){
   const d = await api('/api/m139/gen',{file_id:e.id,name:e.name,size:e.size,
     parent:cur? cur.id : '/', upload_back:up, overwrite:ow,
     path:m139Stack.map(c=>c.name).join('/')+'/'+e.name});
-  if(d.ok){ alert('已开始生成,看下方任务进度'); loadJobs(); } else alert(d.msg);
+  if(d.ok){ alert('已开始生成,进度见「任务」区'); loadJobs(); } else alert(d.msg);
 }
 function updateHome139Label(){
   const dirs=SETTINGS.mobile_dirs||[];
@@ -1891,7 +1891,7 @@ function fillHome139(){
   const w = casWarnFor('139'); if(w){ alert('⚠ '+w); return; }
   const dirs=SETTINGS.mobile_dirs||[];
   const id=(dirs[0]&&dirs[0].id)||SETTINGS.mobile_home_id||'';
-  if(!id){ alert('先到「设置」页配置移动云盘目录'); return; }
+  if(!id){ alert('请先在「设置」页配置移动云盘目录'); return; }
   $('parent139').value=id;
   const nm=((dirs[0]&&dirs[0].name)||SETTINGS.mobile_home_name||id);
   picked139Path=nm;
@@ -1900,7 +1900,7 @@ function fillHome139(){
 function m139GoHome(){
   const dirs=SETTINGS.mobile_dirs||[];
   const id=(dirs[0]&&dirs[0].id)||SETTINGS.mobile_home_id;
-  if(!id){ alert('先到「设置」页配置移动云盘目录'); return; }
+  if(!id){ alert('请先在「设置」页配置移动云盘目录'); return; }
   const nm=((dirs[0]&&dirs[0].name)||SETTINGS.mobile_home_name||'目录').split('/').pop();
   m139Stack=[{id:id,name:nm}];
   loadM139();
@@ -1913,7 +1913,7 @@ async function loadList(){
     else {
       $('curpath').textContent='天翼挂载目录';
       $('entries').innerHTML = roots.length? roots.map((r,i)=>'<div class=row><span class=grow>📁 '+esc(r)+'</span><button class="small grey" onclick="genEnterRoot('+i+')">打开</button></div>').join('')
-        : '<div class=mut>先到「设置」页配置天翼挂载目录</div>';
+        : '<div class=mut>请先在「设置」页配置天翼挂载目录</div>';
       return;
     }
   }
@@ -1941,7 +1941,7 @@ async function genCas(p,size){
        && !confirm('源目录已有 '+nm+'.cas,覆盖保存新 cas?\n确定=覆盖;取消=只生成、不上传回目录')) up=false;
   }
   const d = await api('/api/gen',{path:p,size:size,upload_back:up});
-  alert(d.ok? '已开始生成,进度看「任务」区' : d.msg);
+  alert(d.ok? '已开始生成,进度见「任务」区' : d.msg);
   loadJobs();
 }
 const genResults={};
@@ -1964,7 +1964,7 @@ async function clearJobs(all){
   let ids=[];
   if(!all){
     document.querySelectorAll('.jobchk').forEach(c=>{ if(c.checked) ids.push(c.dataset.id); });
-    if(!ids.length){ alert('先勾选要清空的任务'); return; }
+    if(!ids.length){ alert('请先勾选要清空的任务'); return; }
   }
   if(!confirm(all? '清空全部任务记录?(只清列表,不删除已生成的 cas 文件)' : '清空所选 '+ids.length+' 条任务记录?(只清列表,不删除已生成的 cas 文件)')) return;
   const d = await api('/api/jobs/clear', all? {all:true} : {ids:ids});
@@ -1982,7 +1982,7 @@ async function loadJobs(){
     +(j.path? '<div class=kv>📁 '+esc(j.path)+'</div>':'')+
     '<div class=mut>'+esc(j.status)+(j.progress!=null? ' · '+j.progress+'%':'')+' · '+esc(j.message||'')+'</div>'+
     (j.progress!=null&&j.status==='running'? '<div class=bar><i style="width:'+j.progress+'%"></i></div>':'')+
-    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载这份 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
+    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
     '</div>').join('');
 }
 status(); loadSettings(); loadList(); loadJobs(); refreshBtns();

@@ -258,7 +258,7 @@ def cmd_verify(args):
     need_md5 = bool(str(obj.get("md5", "")).strip())
     need_sha = bool(str(obj.get("sha256", "")).strip())
     if not need_md5 and not need_sha:
-        print("这份 .cas 两组哈希都是空的,没有可校验的内容")
+        print("该 .cas 的两组哈希均为空,无可校验内容")
         return 2
     h = hash_file(args.file, need_md5, need_sha)
     ok = True
@@ -286,7 +286,7 @@ def cmd_verify(args):
         else:
             print("✗ sha256 不符: cas=%s 本地=%s" % (obj["sha256"], h["sha256"]))
             ok = False
-    print("结论: %s" % ("本地文件与这份 .cas 是同一个文件" if ok else "对不上,不是同一个文件(或 cas 已损坏)"))
+    print("结论: %s" % ("本地文件与该 .cas 一致" if ok else "本地文件与该 .cas 不一致(或 cas 已损坏)"))
     return 0 if ok else 1
 
 
@@ -524,7 +524,7 @@ def cmd_restore_139(args):
         return 2
     sha = str(obj.get("sha256", "")).strip().lower()
     if not sha:
-        print("这份 .cas 没有 sha256,是天翼版,对移动云盘无效。请改用 restore-189。")
+        print("该 .cas 不含 sha256(天翼版),对移动云盘无效,请改用 restore-189。")
         return 2
     name = obj.get("name", "")
     size = int(obj.get("size", 0))
@@ -581,7 +581,7 @@ def cmd_restore_139(args):
         return 0
     # 未命中: 服务端没有这个哈希的现成文件,本工具到此为止(不上传本体)
     print("✗ 未命中: 移动云盘服务端池里没有 sha256=%s... 的文件" % sha[:16])
-    print("  这份 .cas 本身没问题,只是云端没有可秒传的源;需要有原文件的人先真上传一次。")
+    print("  云端不存在该文件的可秒传副本;需先将原文件真实上传一次。")
     if args.cleanup_on_miss and file_id:
         st2, txt2 = personal_post(basic, RECYCLE_TRASH_URL, {"fileIds": [file_id]})
         print("  已清理未完成占位(fileId=%s): HTTP %s" % (file_id, st2))
@@ -612,10 +612,10 @@ def openlist_post(base: str, token: str, route: str, payload: dict):
 def cmd_restore_189(args):
     obj = load_cas(args.cas)
     if not str(obj.get("md5", "")).strip():
-        print("这份 .cas 没有 md5,是移动版,对天翼云盘无效。请改用 restore-139。")
+        print("该 .cas 不含 md5(移动版),对天翼云盘无效,请改用 restore-139。")
         return 2
     if not str(obj.get("sliceMd5", "")).strip() and int(obj.get("size", 0)) > 10 * MIB:
-        print("⚠ 这份 .cas 只有 md5、没有 sliceMd5,且文件 >10MiB,天翼 CAS 秒传大概率失败")
+        print("⚠ 该 .cas 只有 md5、没有 sliceMd5,且文件 >10MiB,天翼 CAS 秒传可能失败")
     with open(args.cas, "rb") as f:
         seed_data = base64.b64encode(f.read()).decode("ascii")
     payload = {
@@ -661,12 +661,12 @@ def cmd_restore_189(args):
     if resp.get("code") == 200:
         print("✓ 已提交秒传保存到 %s" % args.target)
         print("  返回: %s" % json.dumps(resp.get("data"), ensure_ascii=False)[:800])
-        print("  请到 OpenList / 天翼云盘里确认《%s》已落地" % obj.get("name", ""))
+        print("  请在 OpenList / 天翼云盘中确认《%s》已保存" % obj.get("name", ""))
         return 0
     print("✗ 秒传保存失败: %s" % (resp.get("message") or txt[:500]))
     print("  已知情况: 若提示 target driver cannot reuse the available hashes,")
-    print("  多半是这份 .cas 的分片信息不足以过 OpenList 主线预检(旧格式常见),")
-    print("  这类文件你已验证可用油猴脚本在 189 网页版还原 —— 本工具不重复诊断这一点。")
+    print("  可能是该 .cas 的分片信息不足以通过 OpenList 主线预检(旧格式常见),")
+    print("  此类文件可改用其他方式还原。")
     return 1
 
 
@@ -678,13 +678,13 @@ def cmd_restore(args):
     has_sha = bool(str(obj.get("sha256", "")).strip())
     if args.to == "mobile" or (has_sha and not has_md5):
         if not has_sha:
-            print("指定了 mobile 但这份 .cas 没有 sha256")
+            print("指定了 mobile 但该 .cas 没有 sha256")
             return 2
         args.parent = args.parent or "/"
         return cmd_restore_139(args)
     if args.to == "tianyi" or (has_md5 and not has_sha):
         if not has_md5:
-            print("指定了 tianyi 但这份 .cas 没有 md5")
+            print("指定了 tianyi 但该 .cas 没有 md5")
             return 2
         if not args.target:
             print("天翼还原需要 --target 指定 OpenList 里天翼挂载的目标目录,如 --target /天翼云盘/电影")
@@ -693,7 +693,7 @@ def cmd_restore(args):
     if has_md5 and has_sha:
         print("双填版: 请用 --to mobile 或 --to tianyi 指定还原到哪家")
         return 2
-    print("这份 .cas 两组哈希都是空的,无法还原")
+    print("该 .cas 的两组哈希均为空,无法还原")
     return 2
 
 
@@ -1476,7 +1476,7 @@ def check_189_cas(session_key, meta):
     md5 = (meta.get("md5") or "").strip()
     sl = (meta.get("sliceMd5") or "").strip()
     if not md5 or not sl:
-        raise RuntimeError("这份 cas 没有 md5/sliceMd5(移动版 cas),做不了天翼检测")
+        raise RuntimeError("该 cas 不含 md5/sliceMd5(移动版),无法进行天翼检测")
     size = int(meta.get("size") or 0)
     init = _189_upload_call(session_key, "/person/initMultiUpload", {
         "parentFolderId": "-11",
