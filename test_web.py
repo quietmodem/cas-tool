@@ -530,6 +530,14 @@ def main():
     check("过期且无回退时报错指明要填三项",
           not d["ok"] and "MailCookies" in d["msg"], d)
     M139_LOGIN["refresh_ok"] = True
+
+    # w) v2.2.0:设置分两区 + 首页选择器限定挂载目录(前端结构断言)
+    import cas_web as cw2
+    html = cw2.INDEX_HTML
+    check("设置页有天翼/移动两区", "☁️ 天翼云盘" in html and "📱 移动云盘" in html)
+    check("天翼区标注 OpenList 接入", "接入方式" in html and "OpenList" in html)
+    check("选择器带挂载目录限定", "pickerScope" in html and "pickerEnterRoot" in html)
+    check("旧的主目录设置卡已移除", "主目录设置" not in html)
     hdrs, payload = captured["create139"][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")
