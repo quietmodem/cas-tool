@@ -59,6 +59,9 @@ class MockOL(BaseHTTPRequestHandler):
                 content = []
             return self._json({"code": 200, "data": {"content": content, "total": len(content)}})
         if self.path == "/api/fs/get":
+            if body.get("path") == "/移动盘2":
+                return self._json({"code": 200, "data": {"name": "移动盘2",
+                                                         "is_dir": True}})
             if body.get("path") == "/移动云盘/中转":
                 return self._json({"code": 200, "data": {"name": "中转",
                                                          "is_dir": True,
@@ -87,6 +90,13 @@ class MockOL(BaseHTTPRequestHandler):
         return self._json({"code": 400})
 
     def do_GET(self):
+        if self.path.startswith("/api/admin/storage/list"):
+            return self._json({"code": 200, "data": {"content": [
+                {"mount_path": "/移动云盘", "driver": "139Yun",
+                 "addition": json.dumps({"root_folder_id": "/"})},
+                {"mount_path": "/移动盘2", "driver": "139Yun",
+                 "addition": json.dumps({"root_folder_id": "ROOTCAT"})},
+            ]}})
         if self.path == "/rawcas":
             self.send_response(200)
             self.send_header("Content-Length", str(len(SCAN_CAS)))
@@ -269,6 +279,14 @@ def main():
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "parent": "MANUAL-ID", "target": "/移动云盘/中转"})
     check("手填 fileId 优先", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "MANUAL-ID", d)
+
+    # q) 挂载根目录:fs/get 无 id -> 存储列表 root_folder_id
+    st, d, _ = req("POST", base + "/api/restore139",
+                   {"cas_b64": sample_b64, "target": "/移动云盘"})
+    check("挂载根目录还原到139根", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
+    st, d, _ = req("POST", base + "/api/restore139",
+                   {"cas_b64": sample_b64, "target": "/移动盘2"})
+    check("挂载根目录用其 root_folder_id", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "ROOTCAT", d)
     hdrs, payload = captured["create139"][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")

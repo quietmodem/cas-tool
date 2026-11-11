@@ -148,7 +148,13 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v1.10.0(2026-11-11)。Web v1.10.0:界面简化——还原
+版本: CLI v1.0.0 / Web v1.10.1(2026-11-11)。Web v1.10.1:修移动直调对挂载
+根目录的解析——目标是挂载根(如 /TV/移动云盘)时 fs/get 不给 id,旧逻辑直接
+报错;现在先用 fs/get 取子目录 id,取不到再查 OpenList 存储列表、用该挂载
+的 root_folder_id(没设即 /)。另:还原按钮按已勾选 cas 的类型亮/灭——勾了
+天翼 cas 只亮天翼按钮,勾了移动 cas 只亮移动按钮,双填两边都亮(上传区与
+扫描区一致)。
+Web v1.10.0:界面简化——还原
 按钮从三个减到两个(「还原到天翼云盘」「还原到移动云盘」,上传区与扫描区
 一致;原来那个「经 OpenList 还原」与天翼按钮是同一条种子接口、且对移动
 根本不可用,只增困惑,已去掉,后端路由保留);解析出的批量列表顶部加「全选」

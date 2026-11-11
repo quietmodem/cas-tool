@@ -31,6 +31,7 @@ import zipfile
 import threading
 import time
 import urllib.error
+import urllib.request
 import urllib.parse
 import urllib.request
 import uuid
@@ -38,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.10.0"
+VERSION = "1.10.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -77,6 +78,41 @@ def ol_list(path, refresh=False):
 
 def ol_get(path):
     return ol_post("/fs/get", {"path": path})
+
+
+def ol_storages():
+    base, token = ol_cfg()
+    if not base or not token:
+        raise RuntimeError("未配置 OpenList")
+    req = urllib.request.Request(base.rstrip("/") + "/api/admin/storage/list",
+                                 headers={"Authorization": token})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as e:
+        raise RuntimeError("读取 OpenList 存储列表失败: %s" % e)
+    if data.get("code") != 200:
+        raise RuntimeError("读取 OpenList 存储列表失败: %s"
+                           % (data.get("message") or data.get("code")))
+    return (data.get("data") or {}).get("content") or []
+
+
+def resolve_139_parent(tdir):
+    """目标目录 -> 139 父目录 fileId。子目录用 fs/get 的 id;挂载根目录
+    fs/get 不给 id,改从存储列表取那个挂载的 root_folder_id(没设就是 /)。"""
+    info = ol_get(tdir)
+    fid = str((info or {}).get("id") or (info or {}).get("fileId") or "").strip()
+    if fid and fid != tdir:
+        return fid, ""
+    for st in ol_storages():
+        mp = str(st.get("mount_path") or "").rstrip("/")
+        if mp and mp == tdir.rstrip("/"):
+            try:
+                add = json.loads(st.get("addition") or "{}")
+            except ValueError:
+                add = {}
+            return str(add.get("root_folder_id") or "").strip() or "/", "(挂载根目录)"
+    raise ValueError("目录 %s 没解析出移动 fileId(fs/get 无 id,且不是某个挂载的根目录)" % tdir)
 
 
 def ol_download_iter(path, info=None):
@@ -609,15 +645,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not parent:
                     if tdir and tdir != "/":
                         try:
-                            info = ol_get(tdir)
+                            parent, note = resolve_139_parent(tdir)
                         except Exception as e:
                             return self.fail("解析目标目录失败: %s" % e)
-                        parent = str((info or {}).get("id")
-                                     or (info or {}).get("fileId") or "").strip()
-                        if not parent:
-                            return self.fail("目标目录 %s 没拿到移动 fileId"
-                                             "(确认它是移动云盘挂载下的目录)" % tdir)
-                        where = "(目标目录 %s)" % tdir
+                        where = "(目标目录 %s%s)" % (tdir, note)
                     else:
                         parent = "/"
                         where = "(移动云盘根目录)"
@@ -779,6 +810,7 @@ textarea{min-height:64px}
 .sheet{background:#fff;border-radius:18px;padding:16px;width:100%;max-width:560px;max-height:88vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.25)}
 @media (prefers-color-scheme:dark){.sheet{background:#1b1b20}}
 #scanbtns>button{display:block;width:100%;margin-top:9px}
+button:disabled{opacity:.35}
 </style></head><body><div class="wrap">
 <h1>🗂 CAS 双云工具 <span class="mut" id="ver"></span></h1>
 <div class="card"><div id="status" class="msg">检查连接中…</div></div>
@@ -814,8 +846,8 @@ textarea{min-height:64px}
 <button class="small grey" onclick="fillHome('139')">填入移动主目录</button></div>
 <input id="parent139" value="" placeholder="移动直调父目录 fileId(高级,一般留空;留空按上方目标目录还原)">
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,把 .cas 也存到目标目录(视频旁边)</label>
-<button class="green" onclick="doRestore('tianyi')">还原到天翼云盘</button>
-<button class="green" onclick="doRestore('mobile')">还原到移动云盘</button>
+<button class="green" id="btnTy" onclick="doRestore('tianyi')">还原到天翼云盘</button>
+<button class="green" id="btnMb" onclick="doRestore('mobile')">还原到移动云盘</button>
 <div class="mut">两个按钮的区别只是去哪个云:天翼经 OpenList 秒传,移动走 139 直调(OpenList 不支持移动秒传)。</div>
 </div><div id="restoremsg" class="msg"></div>
 <div style="border-top:1px solid #eef0f4;margin-top:14px;padding-top:12px">
@@ -830,8 +862,8 @@ textarea{min-height:64px}
 <div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选</button>
 <button class="small grey" onclick="scanCheckAll(false)">全不选</button>
 <span class="mut">目标目录/旁存 .cas 用上方还原区那一栏(留空按主目录)</span></div>
-<button class="green" onclick="scanRestore('tianyi')">还原到天翼云盘</button>
-<button class="green" onclick="scanRestore('mobile')">还原到移动云盘</button>
+<button class="green" id="sBtnTy" onclick="scanRestore('tianyi')">还原到天翼云盘</button>
+<button class="green" id="sBtnMb" onclick="scanRestore('mobile')">还原到移动云盘</button>
 <div id="scanrestoremsg" class="msg"></div>
 </div>
 </div></div>
@@ -935,11 +967,11 @@ async function inspectCas(){
     const d = await api('/api/inspect',{cas_b64:it.b64});
     it.info = d.ok? d.data : null; it.err = d.ok? '' : d.msg;
   }
-  renderBatch();
+  renderBatch(); refreshBtns();
   $('restorebox').style.display='block';
 }
-function batchAll(v){ document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); }
-function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); }
+function batchAll(v){ document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); refreshBtns(); }
+function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); }
 function renderBatch(){
   const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto" checked onchange="batchAll(this.checked)"> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</span></div>' : '';
   $('inspect').innerHTML = head + batchItems.map((it,i)=>
@@ -965,12 +997,12 @@ async function scanCas(){
   $('scanbtns').style.display='block';
   $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas</span> —— 在下面列表里勾选要还原的,再点「还原选中的」按钮';
 }
-function renderScan(){
+function renderScan(){ setTimeout(refreshBtns, 0);
   $('scanlist').innerHTML = scanItems.map((it,i)=>
-    '<div><label><input type="checkbox" class="scanchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="sst'+i+'"></span>'+
+    '<div><label><input type="checkbox" class="scanchk" data-i="'+i+'" style="width:auto" onchange="refreshBtns()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="sst'+i+'"></span>'+
     '<br><span class=kv>来源: '+esc(it.src)+'</span></div>').join('');
 }
-function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>c.checked=v); }
+function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>c.checked=v); refreshBtns(); }
 function scanSetSt(i,txt,cls){ const el=$('sst'+i); if(el){ el.textContent=txt; el.className=cls; } }
 async function scanRestore(to){
   const items=[], idx=[];
@@ -1087,6 +1119,19 @@ function inCloud(target, which){
   const t = (target||'/').replace(/\/+$/,'') || '/';
   return set.some(p=>{ const q=(p||'/').replace(/\/+$/,'') || '/'; return q==='/' || t===q || t.indexOf(q+'/')===0; });
 }
+function kindsOf(items, sel){
+  const s=new Set();
+  items.forEach((it,i)=>{ if(it.info && sel(i)){ const c=itemCloud(it); if(c) s.add(c); } });
+  return s;
+}
+function applyBtns(ty, mb, s){
+  if(ty) ty.disabled = !(s.has('189')||s.has('both'));
+  if(mb) mb.disabled = !(s.has('139')||s.has('both'));
+}
+function refreshBtns(){
+  applyBtns($('btnTy'), $('btnMb'), kindsOf(batchItems, i=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); return c? c.checked : true; }));
+  applyBtns($('sBtnTy'), $('sBtnMb'), kindsOf(scanItems, i=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); return c? c.checked : false; }));
+}
 function itemCloud(it){
   const k=(it.info&&it.info.kind)||'';
   if(k.indexOf('both')===0) return 'both';
@@ -1186,7 +1231,7 @@ async function loadJobs(){
     (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>'+(j.result.cas_b64? '<div style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载这份 .cas</button></a></div>':''):'')+
     '</div>').join('');
 }
-status(); loadSettings(); loadList(); loadJobs();
+status(); loadSettings(); loadList(); loadJobs(); refreshBtns();
 setInterval(loadJobs, 2500);
 </script></body></html>"""
 
