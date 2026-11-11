@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.5.0"
+VERSION = "2.5.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -226,8 +226,13 @@ def run_gen_job(jid, ol_path, size, upload_back):
     _run_gen(jid, size, lambda: ol_download_iter(ol_path), name, up)
 
 
-def run_gen_job139(jid, file_id, name, size):
-    _run_gen(jid, size, lambda: m139_download_iter(file_id), name, None)
+def run_gen_job139(jid, file_id, name, size, parent="/", upload_back=True):
+    up = None
+    if upload_back and parent:
+        def up(cas_bytes):
+            ct.upload_139_bytes(m139_basic(), parent, name + ".cas", cas_bytes)
+            return "移动云盘:" + name + ".cas(视频旁)"
+    _run_gen(jid, size, lambda: m139_download_iter(file_id), name, up)
 
 
 # ---------------------------------------------------------------------------
@@ -861,7 +866,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.fail("缺少 file_id / size")
                 jid = job_new("gen139", "生成 cas(移动直连): " + gname)
                 threading.Thread(target=run_gen_job139,
-                                 args=(jid, fid, gname, gsize), daemon=True).start()
+                                 args=(jid, fid, gname, gsize,
+                                       str(body.get("parent") or "/"),
+                                       bool(body.get("upload_back", True))),
+                                 daemon=True).start()
                 return self.ok({"job_id": jid})
             if path == "/api/gen":
                 return self.api_gen(body)
@@ -1169,6 +1177,7 @@ button:disabled{opacity:.35}
 <label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后把 .cas 上传回同目录</label>
 <div id="entries"></div></div>
 <div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 CAS</h2>
+<div class="row"><label class="mut"><input type="checkbox" id="upback139" style="width:auto" checked> 生成后把 .cas 上传回同目录</label></div>
 <div class="row"><button class="small grey" onclick="m139Roots()">🏠 目录</button>
 <button class="small grey" onclick="m139GoHome()">⭐ 默认目录</button>
 <span class="grow" id="m139crumbs">移动云盘</span>
@@ -1738,7 +1747,9 @@ function m139Down(i){ const e=m139Items[i]; m139Stack.push({id:e.id,name:e.name}
 function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); loadM139(); }
 async function genCas139(i){
   const e=m139Items[i];
-  const d = await api('/api/m139/gen',{file_id:e.id,name:e.name,size:e.size});
+  const cur=m139Stack[m139Stack.length-1];
+  const d = await api('/api/m139/gen',{file_id:e.id,name:e.name,size:e.size,
+    parent:cur? cur.id : '/', upload_back:$('upback139').checked});
   if(d.ok){ alert('已开始生成,看下方任务进度'); loadJobs(); } else alert(d.msg);
 }
 function updateHome139Label(){
@@ -1796,14 +1807,30 @@ async function genCas(p,size){
   alert(d.ok? '已开始生成,进度看「任务」区' : d.msg);
   loadJobs();
 }
+const genResults={};
+async function pushGenToRestore(jid, btn){
+  const g=genResults[jid]; if(!g) return;
+  if(!batchItems.some(b=>b.b64===g.b64)){
+    const ins=await api('/api/inspect',{cas_b64:g.b64});
+    batchItems.push({name:(g.name||'file')+'.cas', b64:g.b64, src:'生成区推送',
+      info:ins.ok? ins.data : null, err:ins.ok? '' : ins.msg});
+    renderBatch();
+  }
+  $('restorebox').style.display='block';
+  refreshBtns();
+  if(btn) btn.textContent='✓ 已推送到还原区';
+  showTab('restore');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
 async function loadJobs(){
   const d = await api('/api/jobs');
   if(!d.ok||!d.data.length) return;
+  d.data.forEach(j=>{ if(j.status==='done'&&j.result&&j.result.cas_b64) genResults[j.id]={name:j.result.name, b64:j.result.cas_b64}; });
   $('jobs').innerHTML = d.data.map(j=>
     '<div style="margin:8px 0"><div>'+esc(j.title)+'</div>'+
     '<div class=mut>'+esc(j.status)+(j.progress!=null? ' · '+j.progress+'%':'')+' · '+esc(j.message||'')+'</div>'+
     (j.progress!=null&&j.status==='running'? '<div class=bar><i style="width:'+j.progress+'%"></i></div>':'')+
-    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>'+(j.result.cas_b64? '<div style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载这份 .cas</button></a></div>':''):'')+
+    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载这份 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
     '</div>').join('');
 }
 status(); loadSettings(); loadList(); loadJobs(); refreshBtns();

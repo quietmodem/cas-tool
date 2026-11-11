@@ -341,6 +341,7 @@ def main():
         "name": "扫描到的影片.mkv", "size": 123456, "md5": "", "sliceMd5": "",
         "sha256": "b" * 64, "recover_pass": "", "create_time": "1794055893"})
     ct.FILE_CREATE_URL = "http://127.0.0.1:%d/hcy/file/create" % mock_139.server_address[1]
+    ct.FILE_COMPLETE_URL = "http://127.0.0.1:%d/hcy/file/complete" % mock_139.server_address[1]
     ct.FILE_LIST_URL = "http://127.0.0.1:%d/hcy/file/list" % mock_139.server_address[1]
     ct.FILE_DOWNLOAD_URL = "http://127.0.0.1:%d/hcy/file/getDownloadUrl" % mock_139.server_address[1]
     _p139 = mock_139.server_address[1]
@@ -495,6 +496,27 @@ def main():
     check("139 直连生成哈希正确",
           obj["md5"] == exp_md5 and obj["sha256"] == exp_sha and obj["sliceMd5"] == exp_slice,
           obj)
+
+    # cc) v2.5.1:139 生成旁存到视频旁 + 结果可推送还原区(前端)
+    n_create = len(captured["create139"])
+    st, d, _ = req("POST", base + "/api/m139/gen",
+                   {"file_id": fid139, "name": M139_FILE, "size": len(CONTENT),
+                    "parent": "D1", "upload_back": True})
+    jid = d["data"]["job_id"]
+    job = None
+    for _ in range(60):
+        st, d, _ = req("GET", base + "/api/jobs")
+        job = [j for j in d["data"] if j["id"] == jid][0]
+        if job["status"] != "running":
+            break
+        time.sleep(0.5)
+    new_creates = [p for (_u, p) in captured["create139"][n_create:]]
+    cas_create = [p for p in new_creates if str(p.get("name", "")).endswith(".cas")]
+    check("139 生成旁存 cas 已上传", job and job["status"] == "done"
+          and bool(job["result"].get("uploaded_to"))
+          and cas_create and cas_create[0].get("parentFileId") == "D1"
+          and captured["complete139"], job and job["result"])
+    check("生成结果带推送按钮", b"pushGenToRestore" in html and b"upback139" in html)
 
     # t) 移动密码登录回退(移植 OpenList 139 驱动的机制)
     check("AES NIST 向量(ECB-128)",
