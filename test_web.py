@@ -185,6 +185,8 @@ def main():
           and b"saveToLib" not in html and b'id="lib"' not in html)
     check("首页含扫描功能与弹窗选择器", all(x in html for x in
           [b'id="scanpath"', b"/api/scan", b"scanCas", b'class="overlay"', b'class="sheet"']))
+    check("首页含扫描独立列表与后台配置区", all(x in html for x in
+          [b"renderScan", b"scanRestore", b'id="scanlist"', b'id="cfgurl"', b'id="cfgtoken"', b'id="cfgpw"']))
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
@@ -313,7 +315,7 @@ def main():
 
     # l) 设置:主目录读写
     st, d, _ = req("GET", base + "/api/settings")
-    check("设置默认为空", d["ok"] and d["data"] == {"tianyi_home": "", "mobile_home": ""}, d)
+    check("设置默认为空", d["ok"] and d["data"]["tianyi_home"] == "" and d["data"]["mobile_home"] == "", d)
     st, d, _ = req("POST", base + "/api/settings",
                    {"tianyi_home": "/TV/天翼云盘在线/", "mobile_home": "/TV/移动云盘"})
     check("设置保存(尾斜杠归一)", d["ok"] and d["data"]["tianyi_home"] == "/TV/天翼云盘在线"
@@ -322,6 +324,29 @@ def main():
     check("设置回读一致", d["ok"] and d["data"]["mobile_home"] == "/TV/移动云盘", d)
     st, d, _ = req("POST", base + "/api/settings", {"tianyi_home": "相对路径", "mobile_home": ""})
     check("设置拒绝无斜杠路径", not d["ok"], d)
+
+    # n) 配置存后台:页面设置优先、密钥不回显、口令可设可清
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"openlist_url": "http://127.0.0.1:%d" % ol_port,
+                    "cas139_phone": "13900001111", "openlist_token": "settings-token-xyz"})
+    check("设置保存网盘配置", d["ok"] and d["data"]["openlist_url"].endswith(str(ol_port))
+          and d["data"]["cas139_phone"] == "13900001111" and d["data"]["openlist_token_set"] is True, d)
+    check("设置不回显密钥明文", "openlist_token" not in d["data"] and "cas139_auth" not in d["data"]
+          and "web_pw_hash" not in d["data"], d["data"])
+    st, d, _ = req("GET", base + "/api/status")
+    check("用页面配置仍连通 OpenList", d["ok"] and d["data"]["openlist_ok"] is True, d)
+    st, d, _ = req("POST", base + "/api/settings", {"web_password": "pw-from-settings"})
+    check("设置页可设访问口令", d["ok"] and d["data"]["web_password_set"] is True, d)
+    st, d, _ = req("GET", base + "/api/status")
+    check("设口令后未登录被拒(后台口令)", st == 401, st)
+    st, d, hdrs = req("POST", base + "/api/login", {"password": "pw-from-settings"})
+    cookie2 = hdrs.get("Set-Cookie", "")
+    check("后台口令可登录", d["ok"] and "cas_sess=" in cookie2, d)
+    st, d, _ = req("POST", base + "/api/settings", {"clear_web_password": True},
+                   headers={"Cookie": cookie2.split(";")[0]})
+    check("可清除后台口令", d["ok"] and d["data"]["web_password_set"] is False, d)
+    st, d, _ = req("GET", base + "/api/status")
+    check("清除口令后恢复免登录", st == 200 and d["ok"], d)
 
     # i) 口令保护
     cas_web.WEB_PASSWORD = "pw123"

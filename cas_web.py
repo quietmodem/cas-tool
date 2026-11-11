@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -51,8 +51,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # ---------------------------------------------------------------------------
 
 def ol_cfg():
-    return (os.environ.get("OPENLIST_URL", "").strip(),
-            os.environ.get("OPENLIST_TOKEN", "").strip())
+    return effective_openlist()
 
 
 def ol_post(route, payload):
@@ -209,9 +208,9 @@ def restore_139(cas_bytes, parent="/"):
     sha = str(obj.get("sha256", "")).strip().lower()
     if not sha:
         return False, "这份 .cas 没有 sha256(是天翼版),不能还原到移动"
-    phone, auth = ct.get_139_credentials()
+    phone, auth = m139_creds()
     if not phone or not auth:
-        return False, "服务端未配置 CAS139_PHONE / CAS139_AUTH,无法直调移动接口"
+        return False, "未配置移动凭据(设置页填手机号 + AUTH,或 compose 里配 CAS139_PHONE / CAS139_AUTH)"
     name = obj.get("name", "")
     size = int(obj.get("size", 0))
     import mimetypes
@@ -302,25 +301,106 @@ def settings_path():
     return os.path.join(DATA_DIR, "settings.json")
 
 
+SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
+                 "cas139_phone", "cas139_auth", "web_pw_hash")
+
+
 def load_settings():
     try:
         with open(settings_path(), encoding="utf-8") as f:
             d = json.load(f)
-        return {"tianyi_home": str(d.get("tianyi_home") or ""),
-                "mobile_home": str(d.get("mobile_home") or "")}
+        return {k: str(d.get(k) or "") for k in SETTINGS_KEYS}
     except Exception:  # noqa: BLE001
-        return {"tianyi_home": "", "mobile_home": ""}
+        return {k: "" for k in SETTINGS_KEYS}
 
 
-def save_settings(tianyi_home, mobile_home):
-    for v in (tianyi_home, mobile_home):
-        if v and not v.startswith("/"):
-            raise ValueError("主目录要以 / 开头(OpenList 里的完整路径),或留空")
-    data = {"tianyi_home": tianyi_home.rstrip("/") or ("/" if tianyi_home else ""),
-            "mobile_home": mobile_home.rstrip("/") or ("/" if mobile_home else "")}
+def store_settings(data):
     with open(settings_path(), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
-    return data
+
+
+def hash_password(pw):
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, 120000)
+    return "pbkdf2$%s$%s" % (salt.hex(), dk.hex())
+
+
+def check_stored_password(pw, stored):
+    try:
+        _, salt_hex, dk_hex = stored.split("$")
+        dk = hashlib.pbkdf2_hmac("sha256", (pw or "").encode(),
+                                  bytes.fromhex(salt_hex), 120000)
+        return dk.hex() == dk_hex
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def password_required():
+    return bool(WEB_PASSWORD or load_settings()["web_pw_hash"])
+
+
+def verify_password(pw):
+    if WEB_PASSWORD and pw == WEB_PASSWORD:
+        return True
+    h = load_settings()["web_pw_hash"]
+    return bool(h) and check_stored_password(pw, h)
+
+
+def update_settings(body):
+    """设置页提交:密钥类字段留空 = 不改;clear_* 为真 = 清除该项。"""
+    cur = load_settings()
+    for k in ("tianyi_home", "mobile_home"):
+        if k in body:
+            v = str(body.get(k) or "").strip()
+            if v and not v.startswith("/"):
+                raise ValueError("主目录要以 / 开头(OpenList 里的完整路径),或留空")
+            cur[k] = v.rstrip("/") or ("/" if v else "")
+    if "openlist_url" in body:
+        cur["openlist_url"] = str(body.get("openlist_url") or "").strip().rstrip("/")
+    if "cas139_phone" in body:
+        cur["cas139_phone"] = str(body.get("cas139_phone") or "").strip()
+    for k in ("openlist_token", "cas139_auth"):
+        v = str(body.get(k) or "").strip()
+        if v:
+            cur[k] = v
+    if body.get("clear_openlist_token"):
+        cur["openlist_token"] = ""
+    if body.get("clear_cas139_auth"):
+        cur["cas139_auth"] = ""
+    pw = str(body.get("web_password") or "")
+    if pw:
+        cur["web_pw_hash"] = hash_password(pw)
+    if body.get("clear_web_password"):
+        cur["web_pw_hash"] = ""
+    store_settings(cur)
+    return public_settings(cur)
+
+
+def public_settings(s=None):
+    """给页面看的设置:密钥只报已设置/未设置,绝不回显明文。"""
+    s = s or load_settings()
+    return {"tianyi_home": s["tianyi_home"], "mobile_home": s["mobile_home"],
+            "openlist_url": s["openlist_url"],
+            "openlist_token_set": bool(s["openlist_token"]
+                                       or os.environ.get("OPENLIST_TOKEN")),
+            "cas139_phone": s["cas139_phone"],
+            "cas139_auth_set": bool(s["cas139_auth"]
+                                    or ct.get_139_credentials()[1]),
+            "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD)}
+
+
+def effective_openlist():
+    s = load_settings()
+    base = s["openlist_url"] or os.environ.get("OPENLIST_URL", "").strip()
+    token = s["openlist_token"] or os.environ.get("OPENLIST_TOKEN", "").strip()
+    return base.rstrip("/"), token
+
+
+def m139_creds():
+    s = load_settings()
+    if s["cas139_phone"] and s["cas139_auth"]:
+        return s["cas139_phone"], s["cas139_auth"]
+    return ct.get_139_credentials()
 
 
 def cas_summary(cas_bytes):
@@ -350,7 +430,7 @@ def make_session():
 
 
 def session_ok(handler):
-    if not WEB_PASSWORD:
+    if not password_required():
         return True
     cookie = handler.headers.get("Cookie", "")
     for part in cookie.split(";"):
@@ -402,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz":
             return self.send_bytes("ok", "text/plain")
         if path == "/":
-            if WEB_PASSWORD and not session_ok(self):
+            if password_required() and not session_ok(self):
                 return self.send_bytes(LOGIN_HTML, "text/html; charset=utf-8")
             return self.send_bytes(INDEX_HTML, "text/html; charset=utf-8")
         if not session_ok(self):
@@ -411,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 return self.api_status()
             if path == "/api/settings":
-                return self.ok(load_settings())
+                return self.ok(public_settings())
             if path == "/api/list":
                 return self.api_list(qs)
             if path == "/api/jobs":
@@ -426,12 +506,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/login":
             body = self.read_json()
-            if WEB_PASSWORD and body.get("password") == WEB_PASSWORD:
+            if verify_password(body.get("password") or ""):
                 tok = make_session()
                 return self.send_bytes(
                     json.dumps({"ok": True, "msg": "ok", "data": None}),
                     extra={"Set-Cookie": "cas_sess=%s; Path=/; HttpOnly; SameSite=Lax" % tok})
-            if not WEB_PASSWORD:
+            if not password_required():
                 return self.ok()
             return self.fail("口令不对")
         if not session_ok(self):
@@ -445,8 +525,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_scan(body)
             if path == "/api/settings":
                 try:
-                    return self.ok(save_settings(str(body.get("tianyi_home") or "").strip(),
-                                                 str(body.get("mobile_home") or "").strip()))
+                    return self.ok(update_settings(body))
                 except ValueError as e:
                     return self.fail(str(e))
             if path == "/api/unzipcas":
@@ -497,8 +576,7 @@ class Handler(BaseHTTPRequestHandler):
         base, token = ol_cfg()
         status = {"version": VERSION, "openlist_configured": bool(base and token),
                   "openlist_ok": False, "openlist_msg": "",
-                  "m139_configured": bool(ct.get_139_credentials()[0]
-                                          and ct.get_139_credentials()[1])}
+                  "m139_configured": bool(m139_creds()[0] and m139_creds()[1])}
         if base and token:
             try:
                 ol_list("/")
@@ -632,6 +710,7 @@ textarea{min-height:64px}
 .overlay{position:fixed;inset:0;background:rgba(10,12,20,.45);z-index:50;align-items:flex-start;justify-content:center;padding:5vh 12px 12px}
 .sheet{background:#fff;border-radius:18px;padding:16px;width:100%;max-width:560px;max-height:88vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.25)}
 @media (prefers-color-scheme:dark){.sheet{background:#1b1b20}}
+#scanbtns>button{display:block;width:100%;margin-top:9px}
 </style></head><body><div class="wrap">
 <h1>🗂 CAS 双云工具 <span class="mut" id="ver"></span></h1>
 <div class="card"><div id="status" class="msg">检查连接中…</div></div>
@@ -678,6 +757,16 @@ textarea{min-height:64px}
 <button class="small" onclick="scanCas()">开始扫描</button></div>
 <label class="mut"><input type="checkbox" id="scanrec" style="width:auto" checked> 包含子文件夹(递归最多 6 层,最多取 300 份)</label>
 <div id="scanmsg" class="msg"></div>
+<div id="scanlist"></div>
+<div id="scanbtns" style="display:none">
+<div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选</button>
+<button class="small grey" onclick="scanCheckAll(false)">全不选</button>
+<span class="mut">目标目录/旁存 .cas 用上方还原区那一栏(留空按主目录)</span></div>
+<button class="green" onclick="scanRestore('tianyi')">还原选中的到天翼(经OpenList)</button>
+<button class="green" onclick="scanRestore('openlist')">经 OpenList 还原选中的</button>
+<button class="green" onclick="scanRestore('mobile')">还原选中的到移动(直调139接口)</button>
+<div id="scanrestoremsg" class="msg"></div>
+</div>
 </div></div>
 
 </div>
@@ -696,6 +785,20 @@ textarea{min-height:64px}
 </div>
 
 <div id="tab-settings" style="display:none">
+<div class="card"><h2>网盘配置</h2>
+<div class="mut">在这里配好就行,不用改 docker-compose;配置存在群晖的工具数据目录里。密钥类留空 = 不修改,页面只显示已设置/未设置,不回显明文。</div>
+<label class="mut">OpenList 地址</label>
+<input id="cfgurl" placeholder="如 http://192.168.111.2:5244">
+<label class="mut">OpenList Token <span id="tokstate" class="kv"></span></label>
+<input id="cfgtoken" type="password" placeholder="粘贴 OpenList 后台的令牌">
+<label class="mut">移动云盘手机号(移动直调还原用,可不填)</label>
+<input id="cfgphone" placeholder="手机号">
+<label class="mut">移动 AUTH <span id="authstate" class="kv"></span></label>
+<input id="cfgauth" type="password" placeholder="形如 Basic xxxxx,留空 = 不修改">
+<label class="mut">页面访问口令 <span id="pwstate" class="kv"></span></label>
+<input id="cfgpw" type="password" placeholder="留空 = 不修改">
+<label class="mut"><input type="checkbox" id="cfgpwclear" style="width:auto"> 清除访问口令(打开页面不再要口令)</label>
+</div>
 <div class="card"><h2>主目录设置</h2>
 <div class="mut">设置后:还原时目标目录留空会按按钮自动用对应主目录;生成页也能一键跳过去,不用每次翻 OpenList 的目录树。</div>
 <label class="mut">天翼云盘主目录</label>
@@ -706,7 +809,7 @@ textarea{min-height:64px}
 <button class="small grey" onclick="togglePicker('home139')">📁 选目录</button></div>
 <button onclick="saveSettings()">保存设置</button>
 <div id="setmsg" class="msg"></div>
-<div class="mut">主目录保存在群晖的工具数据目录里,所有设备共用同一份。账号凭据(OPENLIST_URL / TOKEN、CAS139_PHONE / AUTH)和页面口令仍在 docker-compose.yml 里配置,不在这里。</div>
+<div class="mut">所有设置保存在群晖的工具数据目录(settings.json),所有设备共用同一份。docker-compose 里的同名环境变量若也填了,页面设置优先,环境变量只作兜底——访问口令忘了时,在 compose 里临时加 WEB_PASSWORD 就能救急登录。</div>
 </div>
 </div>
 </div>
@@ -726,7 +829,7 @@ async function status(){
   const s=d.data; $('ver').textContent='v'+s.version;
   $('status').innerHTML =
     (s.openlist_configured? (s.openlist_ok? '🟢 OpenList '+esc(s.openlist_msg) : '🔴 OpenList 未连通: '+esc(s.openlist_msg)) : '🔴 未配置 OPENLIST_URL / OPENLIST_TOKEN')
-    +'<br>'+(s.m139_configured? '🟢 移动直调接口已配置凭据' : '🟡 未配置 CAS139_PHONE / CAS139_AUTH(移动还原不可用,天翼不受影响)');
+    +'<br>'+(s.m139_configured? '🟢 移动直调接口已配置凭据' : '🟡 未配置移动凭据(设置页可填;移动直调还原不可用,天翼不受影响)');
 }
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();
   r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file);});}
@@ -766,19 +869,35 @@ function renderBatch(){
            : '<div>📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
   ).join('') + (batchItems.length>1? '<div class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</div>':'');
 }
+let scanItems=[];
 async function scanCas(){
   const p=$('scanpath').value.trim();
   if(!p){ alert('先填要扫描的目录(或点「选目录」)'); return; }
   $('scanmsg').textContent='扫描中…目录大的话稍等一下';
+  $('scanbtns').style.display='none';
   const d=await api('/api/scan',{path:p,recursive:$('scanrec').checked});
   if(!d.ok){ $('scanmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
-  if(!d.data.length){ $('scanmsg').textContent='这个目录下没找到 .cas 文件'; return; }
-  batchItems = d.data.map(x=>({name:x.cas_name, b64:x.cas_b64, src:x.path,
+  if(!d.data.length){ $('scanmsg').textContent='这个目录下没找到 .cas 文件'; scanItems=[]; $('scanlist').innerHTML=''; return; }
+  scanItems = d.data.map(x=>({name:x.cas_name, b64:x.cas_b64, src:x.path,
     info:{name:x.name, size:x.size, kind:x.kind, md5:x.md5, sliceMd5:x.sliceMd5, sha256:x.sha256}}));
-  renderBatch();
+  renderScan();
   $('restorebox').style.display='block';
-  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas,已列入上方待还原列表</span> —— 勾选要还原的,选好目标目录,再点上面的还原按钮';
-  $('inspect').scrollIntoView({behavior:'smooth',block:'center'});
+  $('scanbtns').style.display='block';
+  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas</span> —— 在下面列表里勾选要还原的,再点「还原选中的」按钮';
+}
+function renderScan(){
+  $('scanlist').innerHTML = scanItems.map((it,i)=>
+    '<div><label><input type="checkbox" class="scanchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="sst'+i+'"></span>'+
+    '<br><span class=kv>来源: '+esc(it.src)+'</span></div>').join('');
+}
+function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>c.checked=v); }
+function scanSetSt(i,txt,cls){ const el=$('sst'+i); if(el){ el.textContent=txt; el.className=cls; } }
+async function scanRestore(to){
+  const items=[], idx=[];
+  scanItems.forEach((it,i)=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); if(c && c.checked){ items.push(it); idx.push(i); } });
+  if(!items.length){ alert('先在扫描列表里勾选要还原的 cas'); return; }
+  const r = await restoreCore(to, items, (j,txt,cls)=>scanSetSt(idx[j],txt,cls));
+  $('scanrestoremsg').innerHTML='还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标目录: '+esc(r.target)+')';
 }
 function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }
 let pickerPath='/', pickerTarget='target189';
@@ -791,13 +910,22 @@ function switchTab(name){
 let SETTINGS={tianyi_home:'',mobile_home:''};
 async function loadSettings(){
   const d = await api('/api/settings');
-  if(d.ok){ SETTINGS=d.data; $('home189').value=SETTINGS.tianyi_home||''; $('home139').value=SETTINGS.mobile_home||''; }
+  if(!d.ok) return;
+  SETTINGS=d.data;
+  $('home189').value=SETTINGS.tianyi_home||''; $('home139').value=SETTINGS.mobile_home||'';
+  $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
+  $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置)' : '(未设置)';
+  $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置)' : '(未设置)';
+  $('pwstate').textContent = SETTINGS.web_password_set? '(已设置)' : '(未设置)';
 }
 async function saveSettings(){
-  const body={tianyi_home:$('home189').value.trim(), mobile_home:$('home139').value.trim()};
+  const body={tianyi_home:$('home189').value.trim(), mobile_home:$('home139').value.trim(),
+    openlist_url:$('cfgurl').value.trim(), openlist_token:$('cfgtoken').value.trim(),
+    cas139_phone:$('cfgphone').value.trim(), cas139_auth:$('cfgauth').value.trim(),
+    web_password:$('cfgpw').value, clear_web_password:$('cfgpwclear').checked};
   const d = await api('/api/settings', body);
   $('setmsg').innerHTML = d.ok? '<span class=good>已保存</span>' : '<span class=err>'+esc(d.msg)+'</span>';
-  if(d.ok) SETTINGS=body;
+  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; loadSettings(); status(); }
 }
 function fillHome(which){
   const v = which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home;
@@ -845,23 +973,21 @@ function pickerHome(which){ const v=which==='189'? SETTINGS.tianyi_home : SETTIN
 function pickerPick(p){ $(pickerTarget).value=p; $('picker').style.display='none'; }
 function pickerUse(){ pickerPick(pickerPath); }
 const sleepMs=ms=>new Promise(r=>setTimeout(r,ms));
-async function doRestore(to){
-  if(!batchItems.length){ alert('先解析 cas'); return; }
+async function restoreCore(to, items, setStatus){
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   let target = $('target189').value.trim();
   if(!target) target = (to==='tianyi'? SETTINGS.tianyi_home : to==='openlist'? SETTINGS.mobile_home : '') || '/';
   let okN=0, badN=0;
-  for(let i=0;i<batchItems.length;i++){
-    const it=batchItems[i];
+  for(let i=0;i<items.length;i++){
+    const it=items[i];
     if(!it.info){ badN++; continue; }
-    const chk=document.querySelector('.itchk[data-i="'+i+'"]');
-    if(chk && !chk.checked){ continue; }
-    setSt(i,'还原中…','mut');
+    if(it._skip){ continue; }
+    setStatus(i,'还原中…','mut');
     const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||'/'}
                               : {cas_b64:it.b64,cas_name:it.name,target:target};
     const d = await api(url,body);
-    if(!d.ok){ setSt(i,'✗ '+d.msg,'err'); badN++; continue; }
-    if(to==='mobile'){ setSt(i,'✓ '+(d.msg||'已还原'),'good'); okN++; continue; }
+    if(!d.ok){ setStatus(i,'✗ '+d.msg,'err'); badN++; continue; }
+    if(to==='mobile'){ setStatus(i,'✓ '+(d.msg||'已还原'),'good'); okN++; continue; }
     await sleepMs(1500);
     const ex = await api('/api/exists',{path:target,name:it.info.name});
     if(ex.ok && ex.data.found){
@@ -870,11 +996,17 @@ async function doRestore(to){
         const sc = await api('/api/sidecar',{dir:target,video_name:it.info.name,cas_b64:it.b64});
         note += sc.ok? '(.cas 已存到同目录)' : '(.cas 存同目录失败: '+sc.msg+')';
       }
-      setSt(i,note,'good'); okN++;
+      setStatus(i,note,'good'); okN++;
     }
-    else { setSt(i,'⚠ 已提交,但在 '+target+' 还没看到这个文件(可能仍在处理,或保存失败,请看 OpenList 后台任务/日志)','err'); badN++; }
+    else { setStatus(i,'⚠ 已提交,但在 '+target+' 还没看到这个文件(可能仍在处理,或保存失败,请看 OpenList 后台任务/日志)','err'); badN++; }
   }
-  $('restoremsg').innerHTML='批量还原完成: 确认成功 '+okN+' · 未确认/失败 '+badN+'(目标目录: '+esc(target)+')';
+  return {okN:okN, badN:badN, target:target};
+}
+async function doRestore(to){
+  if(!batchItems.length){ alert('先解析 cas'); return; }
+  batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); it._skip = c? !c.checked : false; });
+  const r = await restoreCore(to, batchItems, setSt);
+  $('restoremsg').innerHTML='批量还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标目录: '+esc(r.target)+')';
 }
 async function loadList(){
   const d = await api('/api/list?path='+encodeURIComponent(curPath));
@@ -911,7 +1043,7 @@ setInterval(loadJobs, 2500);
 def main():
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("cas-web v%s 监听 :%d  数据目录 %s  口令保护:%s"
-          % (VERSION, PORT, DATA_DIR, "开" if WEB_PASSWORD else "关"))
+          % (VERSION, PORT, DATA_DIR, "开" if password_required() else "关"))
     srv.serve_forever()
 
 

@@ -17,10 +17,11 @@
    `https://raw.githubusercontent.com/quietmodem/cas-tool/main/docker-compose.yml`
    (或把仓库里的 `docker-compose.yml` 内容整段复制出来),放到群晖任意目录
    (如 `/volume1/docker/cas-tool/`)
-2. 改文件里 `OPENLIST_URL` / `OPENLIST_TOKEN`(复制你 OpenList 的地址和后台令牌),
-   建议顺手填上 `WEB_PASSWORD` 页面口令
-3. 群晖 Container Manager 里以「项目」方式选这个文件启动,或 SSH 下 `docker compose up -d`
-4. 手机 Safari 打开 `http://群晖IP:8099`,可添加到主屏幕当 App 用
+2. 文件不用改任何内容,群晖 Container Manager 里以「项目」方式选这个文件
+   启动,或 SSH 下 `docker compose up -d`
+3. 打开 `http://群晖IP:8099`,到「设置」页填 OpenList 地址/Token(和可选的
+   移动凭据、页面口令),配置存服务端,以后都不用碰 yaml
+4. 手机 Safari 打开同一地址,可添加到主屏幕当 App 用
 5. 更新版本:`docker compose pull && docker compose up -d` 就完事
 
 开发者改代码走 git: `git clone https://github.com/quietmodem/cas-tool.git`,
@@ -146,7 +147,13 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v1.6.0(2026-11-11)。Web v1.6.0:① 目录选择器改为
+版本: CLI v1.0.0 / Web v1.7.0(2026-11-11)。Web v1.7.0:① 配置全部搬到
+后台:OpenList 地址/Token、移动凭据、页面口令都在「设置」页里配(存服务端
+settings.json,口令只存哈希,密钥不回显明文),页面设置优先于环境变量,
+环境变量退为兜底(口令忘了可用 compose 里的 WEB_PASSWORD 救急登录);
+docker-compose.yml 精简为不用改的固定文件;② 扫描结果改为独立列表先展示,
+默认不勾选,用户勾选后在扫描区内直接还原,不再自动塞进上方还原框。
+Web v1.6.0:① 目录选择器改为
 居中弹窗(修 PC 上点选目录跳到页面顶部的问题),点遮罩可关;② 新增「扫描
 网盘目录里的 .cas」:指定目录(可递归子目录,最多 6 层 / 300 份),服务端
 逐个下载解析出源文件名/类型/大小,结果并入待还原列表(每份可勾选),
