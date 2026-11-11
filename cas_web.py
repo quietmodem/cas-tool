@@ -23,8 +23,10 @@ cas_web.py — cas_tool 的 Web 后台(iOS 友好),配合 cas_tool.py 使用。
 
 import base64
 import hashlib
+import io
 import json
 import os
+import zipfile
 import threading
 import time
 import urllib.error
@@ -35,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 LIB_DIR = os.path.join(DATA_DIR, "caslib")
@@ -266,9 +268,9 @@ def restore_189(cas_bytes, cas_name, target):
 
 def restore_openlist(cas_bytes, cas_name, target):
     """经 OpenList 种子秒传保存还原到任意挂载目录(天翼/移动都可):
-    本工具不预判哈希够不够,把 cas 原样交给 OpenList,以它的预检结果为准。"""
-    if not target:
-        return False, "请填写 OpenList 里的目标目录"
+    本工具不预判哈希够不够,把 cas 原样交给 OpenList,以它的预检结果为准。
+    目标目录不填 = OpenList 根目录 / 。"""
+    target = (target or "").strip() or "/"
     payload = {
         "seed_data": base64.b64encode(cas_bytes).decode("ascii"),
         "file_name": cas_name or "file.cas",
@@ -286,6 +288,27 @@ def restore_openlist(cas_bytes, cas_name, target):
         return True, "✓ 已提交秒传保存到 %s(预检: %s)" % (target, cap_note)
     except RuntimeError as e:
         return False, "秒传保存失败: %s" % e
+
+
+def unzip_cas(zip_bytes):
+    """从 zip 压缩包里取出全部 .cas 条目,返回 [{name, cas_b64}]。
+    只取小文件(单个 ≤1MB、总解压 ≤16MB、最多 200 个),防压缩包炸弹。"""
+    items, total = [], 0
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            base = os.path.basename(info.filename.replace("\\", "/"))
+            if not base.lower().endswith(".cas"):
+                continue
+            if info.file_size > 1024 * 1024:
+                continue
+            total += info.file_size
+            if total > 16 * 1024 * 1024 or len(items) >= 200:
+                break
+            items.append({"name": base,
+                          "cas_b64": base64.b64encode(z.read(info)).decode("ascii")})
+    return items
 
 
 def cas_summary(cas_bytes):
@@ -408,6 +431,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/inspect":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
                 return self.ok(cas_summary(cas_bytes))
+            if path == "/api/unzipcas":
+                try:
+                    items = unzip_cas(base64.b64decode(body.get("zip_b64", "")))
+                except zipfile.BadZipFile:
+                    return self.fail("这不是有效的 zip 压缩包")
+                if not items:
+                    return self.fail("压缩包里没找到 .cas 文件")
+                return self.ok(items)
+            if path == "/api/exists":
+                entries = ol_list(body.get("path") or "/")
+                name = body.get("name") or ""
+                return self.ok({"found": any(e.get("name") == name for e in entries)})
             if path == "/api/gen":
                 return self.api_gen(body)
             if path == "/api/restore139":
@@ -581,13 +616,14 @@ textarea{min-height:64px}
 <div class="card"><div id="status" class="msg">检查连接中…</div></div>
 
 <div class="card"><h2>① 还原一份 .cas</h2>
-<input type="file" id="casfile" accept=".cas,.txt">
+<input type="file" id="casfile" accept=".cas,.txt,.zip" multiple>
+<div class="mut">可多选 .cas,也可选含多个 .cas 的 .zip 压缩包</div>
 <textarea id="castext" placeholder="或把 .cas 的内容(Base64 文本)粘贴到这里"></textarea>
 <button onclick="inspectCas()">解析</button>
 <button class="grey" onclick="saveToLib()">存入 cas 库</button>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
-<div class="row"><input id="target189" class="grow" placeholder="OpenList 目标目录(如 /天翼云盘/电影 或 /移动云盘/电影)">
+<div class="row"><input id="target189" class="grow" placeholder="OpenList 目标目录(不填 = 根目录 /;如 /天翼云盘/电影)">
 <button class="small grey" onclick="togglePicker()">📁 选目录</button></div>
 <div id="picker" style="display:none">
 <div class="row"><button class="small grey" onclick="pickerUp()">⬆ 上级</button><span class="grow" id="pickerpath">/</span></div>
@@ -633,30 +669,49 @@ async function status(){
 }
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();
   r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file);});}
-async function getCasB64(){
-  const f=$('casfile').files[0];
-  if(f){ curCasName=f.name; return await fileToB64(f); }
+let batchItems=[];
+async function collectItems(){
+  const items=[];
+  for(const f of $('casfile').files){
+    if(/\.zip$/i.test(f.name)){
+      const d = await api('/api/unzipcas',{zip_b64:await fileToB64(f)});
+      if(!d.ok) throw new Error(f.name+': '+d.msg);
+      for(const it of d.data) items.push({name:it.name, b64:it.cas_b64});
+    } else {
+      items.push({name:f.name, b64:await fileToB64(f)});
+    }
+  }
   const t=$('castext').value.trim();
-  if(t){ curCasName='pasted.cas'; return btoa(unescape(encodeURIComponent(t))); }
-  return '';
+  if(t) items.push({name:'pasted.cas', b64:btoa(unescape(encodeURIComponent(t)))});
+  return items;
 }
 async function inspectCas(){
-  curCasB64 = await getCasB64();
-  if(!curCasB64){ $('inspect').innerHTML='<span class=err>先选择 .cas 文件或粘贴内容</span>'; return; }
-  const d = await api('/api/inspect',{cas_b64:curCasB64});
-  if(!d.ok){ $('inspect').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; $('restorebox').style.display='none'; return; }
-  const s=d.data;
-  $('inspect').innerHTML='类型:<b>'+esc(s.kind)+'</b><br>名字:'+esc(s.name)+
-    '<br>大小:'+esc(s.size)+' 字节<br><span class=kv>md5: '+esc(s.md5||'(空)')+
-    '<br>sliceMd5: '+esc(s.sliceMd5||'(空)')+'<br>sha256: '+esc(s.sha256||'(空)')+'</span>';
+  $('inspect').textContent='解析中…';
+  try{ batchItems = await collectItems(); }
+  catch(e){ $('inspect').innerHTML='<span class=err>'+esc(e.message)+'</span>'; return; }
+  if(!batchItems.length){ $('inspect').innerHTML='<span class=err>先选择 .cas/.zip 文件或粘贴内容</span>'; $('restorebox').style.display='none'; return; }
+  for(const it of batchItems){
+    const d = await api('/api/inspect',{cas_b64:it.b64});
+    it.info = d.ok? d.data : null; it.err = d.ok? '' : d.msg;
+  }
+  renderBatch();
   $('restorebox').style.display='block';
 }
+function renderBatch(){
+  $('inspect').innerHTML = batchItems.map((it,i)=>
+    it.info? '<div>📄 '+esc(it.info.name)+' <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
+      '<br><span class=kv>md5: '+esc(it.info.md5||'(空)')+' · sliceMd5: '+esc(it.info.sliceMd5||'(空)')+' · sha256: '+esc(it.info.sha256||'(空)')+'</span></div>'
+           : '<div>📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
+  ).join('') + (batchItems.length>1? '<div class=mut>共 '+batchItems.length+' 份 cas</div>':'');
+}
+function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }
 async function saveToLib(){
-  if(!curCasB64) curCasB64 = await getCasB64();
-  if(!curCasB64){ alert('先选择 .cas 文件'); return; }
-  const d = await api('/api/lib/add',{cas_b64:curCasB64});
-  $('restoremsg').innerHTML = d.ok? '<span class=good>已存入 cas 库: '+esc(d.data.file)+'</span>' : '<span class=err>'+esc(d.msg)+'</span>';
-  if(d.ok) loadLib();
+  if(!batchItems.length) await inspectCas();
+  if(!batchItems.length){ alert('先选择 .cas 文件'); return; }
+  let n=0;
+  for(const it of batchItems){ const d = await api('/api/lib/add',{cas_b64:it.b64}); if(d.ok) n++; }
+  $('restoremsg').innerHTML = '<span class=good>已存入 cas 库 '+n+' 份</span>';
+  if(n) loadLib();
 }
 let pickerPath='/';
 function togglePicker(){
@@ -678,18 +733,29 @@ function pickerEnter(p){ pickerPath=p; loadPicker(); }
 function pickerUp(){ if(pickerPath!=='/'){ pickerPath=pickerPath.split('/').slice(0,-1).join('/')||'/'; loadPicker(); } }
 function pickerPick(p){ $('target189').value=p; $('picker').style.display='none'; }
 function pickerUse(){ pickerPick(pickerPath); }
+const sleepMs=ms=>new Promise(r=>setTimeout(r,ms));
 async function doRestore(to){
-  if(!curCasB64){ alert('先解析一份 cas'); return; }
-  if($('savecas').checked){
-    const sd = await api('/api/lib/add',{cas_b64:curCasB64});
-    if(sd.ok) loadLib();
-  }
-  $('restoremsg').textContent='提交中…';
+  if(!batchItems.length){ alert('先解析 cas'); return; }
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
-  const body = to==='mobile'? {cas_b64:curCasB64,parent:$('parent139').value||'/'}
-                            : {cas_b64:curCasB64,cas_name:curCasName,target:$('target189').value};
-  const d = await api(url,body);
-  $('restoremsg').innerHTML = d.ok? '<span class=good>'+esc(d.msg)+'</span>' : '<span class=err>'+esc(d.msg)+'</span>';
+  const target = $('target189').value.trim() || '/';
+  let okN=0, badN=0;
+  for(let i=0;i<batchItems.length;i++){
+    const it=batchItems[i];
+    if(!it.info){ badN++; continue; }
+    setSt(i,'还原中…','mut');
+    if($('savecas').checked) await api('/api/lib/add',{cas_b64:it.b64});
+    const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||'/'}
+                              : {cas_b64:it.b64,cas_name:it.name,target:target};
+    const d = await api(url,body);
+    if(!d.ok){ setSt(i,'✗ '+d.msg,'err'); badN++; continue; }
+    if(to==='mobile'){ setSt(i,'✓ '+(d.msg||'已还原'),'good'); okN++; continue; }
+    await sleepMs(1500);
+    const ex = await api('/api/exists',{path:target,name:it.info.name});
+    if(ex.ok && ex.data.found){ setSt(i,'✓ 已确认文件在 '+target,'good'); okN++; }
+    else { setSt(i,'⚠ 已提交,但在 '+target+' 还没看到这个文件(可能仍在处理,或保存失败,请看 OpenList 后台任务/日志)','err'); badN++; }
+  }
+  if($('savecas').checked) loadLib();
+  $('restoremsg').innerHTML='批量还原完成: 确认成功 '+okN+' · 未确认/失败 '+badN+'(目标目录: '+esc(target)+')';
 }
 async function loadList(){
   const d = await api('/api/list?path='+encodeURIComponent(curPath));

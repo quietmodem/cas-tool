@@ -154,6 +154,8 @@ def main():
     check("首页可打开", st == 200 and "CAS 双云工具".encode() in html)
     check("首页含目录选择器与保存勾选", all(x in html for x in
           ["选目录".encode(), b'id="picker"', b'id="savecas"', b"pickerPick", b"loadPicker"]))
+    check("首页含批量/zip 支持", all(x in html for x in
+          [b"multiple", b"unzipcas", b"batchItems", b"/api/exists"]))
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
@@ -255,6 +257,28 @@ def main():
     check("restoreol 载荷指向移动挂载",
           len(rapids) == before + 1 and rapids[-1]["path"] == "/移动云盘/电影"
           and base64.b64decode(rapids[-1]["seed_data"]) == sample_bytes)
+
+    # k) zip 解包出多个 cas + 还原后核验 + 空目标默认根目录
+    import io as _io, zipfile as _zf
+    buf = _io.BytesIO()
+    with _zf.ZipFile(buf, "w") as z:
+        z.writestr("a.cas", sample_bytes)
+        z.writestr("sub/b.cas", sample_bytes)
+        z.writestr("readme.txt", "ignore me")
+    st, d, _ = req("POST", base + "/api/unzipcas",
+                   {"zip_b64": base64.b64encode(buf.getvalue()).decode()})
+    check("unzipcas 取出 2 份 cas", d["ok"] and len(d["data"]) == 2
+          and sorted(x["name"] for x in d["data"]) == ["a.cas", "b.cas"]
+          and all(base64.b64decode(x["cas_b64"]) == sample_bytes for x in d["data"]), d)
+    st, d, _ = req("POST", base + "/api/exists", {"path": "/天翼云盘", "name": FNAME})
+    check("exists 命中已有文件", d["ok"] and d["data"]["found"] is True, d)
+    st, d, _ = req("POST", base + "/api/exists", {"path": "/天翼云盘", "name": "nope.bin"})
+    check("exists 未命中不存在文件", d["ok"] and d["data"]["found"] is False, d)
+    st, d, _ = req("POST", base + "/api/restore189",
+                   {"cas_b64": base64.b64encode(cas_bytes).decode(),
+                    "cas_name": cas_file, "target": ""})
+    rapid = [b for k, b in captured["seed"] if k == "rapid_upload"][-1]
+    check("空目标默认提交到根目录 /", d["ok"] and rapid["path"] == "/", d)
 
     # i) 口令保护
     cas_web.WEB_PASSWORD = "pw123"
