@@ -1,0 +1,25 @@
+# CAS 双云工具 —— 群晖 Container Manager「项目」或 docker compose 直接可用
+# 用法:
+#   1. 把 cas_tool.py / cas_web.py / Dockerfile / 本文件放进群晖同一个目录
+#      (如 /volume1/docker/cas-tool/)
+#   2. 改下面 environment 里的连接信息(复制你 OpenList 的地址和令牌即可)
+#   3. 启动后手机浏览器打开 http://群晖IP:8099
+services:
+  cas-tool:
+    build: .
+    image: cas-tool:latest
+    container_name: cas-tool
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    environment:
+      # —— OpenList(网盘挂载接口):把你现有 OpenList 的地址和令牌复制过来 ——
+      OPENLIST_URL: "http://192.168.111.10:5244"   # ← 改成你的 OpenList 地址
+      OPENLIST_TOKEN: "改成你的OpenList令牌"        # 后台:设置 → 其他 → 令牌
+      # —— 移动云盘直调还原(139):浏览器登录 yun.139.com 后 F12 网络里抄 Authorization ——
+      CAS139_PHONE: ""                             # 手机号(只还原移动版时需要)
+      CAS139_AUTH: ""                              # 形如 Basic xxxxx(同上)
+      # —— 页面访问口令:强烈建议设一个,留空则局域网内任何人打开就能用 ——
+      WEB_PASSWORD: ""                             # ← 建议填
+    volumes:
+      - ./data:/data    # cas 库存在这里,容器重建不丢
