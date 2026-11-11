@@ -148,7 +148,10 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v2.5.1(2026-11-11)。Web v2.5.1:① 移动直连
+版本: CLI v1.0.0 / Web v2.5.2(2026-11-11)。Web v2.5.2:还原区
+「解析」旁加「清空」按钮,一键清掉已解析的 cas 列表、所选文件、
+粘贴内容与还原结果(目标目录保留)。
+Web v2.5.1:① 移动直连
 生成 cas 后可把 .cas 真上传回视频旁(139 create→PUT→complete,
 默认开、页面可关),与天翼生成行为一致。② 生成任务完成后结果旁
 加「⬆ 推送到还原区」:生成的双填 cas 一键并入还原区,随即可以

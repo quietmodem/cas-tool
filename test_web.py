@@ -517,6 +517,7 @@ def main():
           and cas_create and cas_create[0].get("parentFileId") == "D1"
           and captured["complete139"], job and job["result"])
     check("生成结果带推送按钮", b"pushGenToRestore" in html and b"upback139" in html)
+    check("还原区有清空按钮", b"clearRestore" in html)
 
     # t) 移动密码登录回退(移植 OpenList 139 驱动的机制)
     check("AES NIST 向量(ECB-128)",

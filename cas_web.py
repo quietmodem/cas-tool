@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.5.1"
+VERSION = "2.5.2"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1134,7 +1134,7 @@ button:disabled{opacity:.35}
 <input type="file" id="casfile" accept=".cas,.txt,.zip" multiple hidden onchange="inspectCas()">
 <div id="dropzone" class="dropzone" onclick="$('casfile').click()">📥 把 .cas / .zip 拖到这里,或点击选择文件(可多选)</div>
 <textarea id="castext" placeholder="或把 .cas 的内容(Base64 文本)粘贴到这里"></textarea>
-<button onclick="inspectCas()">解析</button>
+<div class="row"><span><button onclick="inspectCas()">解析</button></span><button class="grey" onclick="clearRestore()">清空</button></div>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
 <div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼挂载目录,移动按钮用移动挂载目录)" oninput="$('parent139').value='';$('pick139label').textContent=''">
@@ -1291,6 +1291,15 @@ async function inspectCas(){
   }
   renderBatch(); refreshBtns();
   $('restorebox').style.display='block';
+}
+function clearRestore(){
+  batchItems=[]; dropFiles=null;
+  $('casfile').value='';
+  $('castext').value='';
+  $('inspect').innerHTML='';
+  $('restoremsg').innerHTML='';
+  $('restorebox').style.display='none';
+  refreshBtns();
 }
 function batchAll(v){ document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); refreshBtns(); }
 function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); }
