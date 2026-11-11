@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 LIB_DIR = os.path.join(DATA_DIR, "caslib")
@@ -443,6 +443,8 @@ class Handler(BaseHTTPRequestHandler):
                 entries = ol_list(body.get("path") or "/")
                 name = body.get("name") or ""
                 return self.ok({"found": any(e.get("name") == name for e in entries)})
+            if path == "/api/sidecar":
+                return self.api_sidecar(body)
             if path == "/api/gen":
                 return self.api_gen(body)
             if path == "/api/restore139":
@@ -537,6 +539,25 @@ class Handler(BaseHTTPRequestHandler):
         with open(fp, "wb") as f:
             f.write(cas_bytes)
         return self.ok({"file": os.path.basename(fp), **summary})
+
+    def api_sidecar(self, body):
+        """把 .cas 作为侧车文件存到目标目录里视频旁边:<dir>/<视频名>.cas。
+        cas 来源二选一:cas_b64(页面当前这份)或 lib_file(cas 库里的文件名)。"""
+        if body.get("lib_file"):
+            fp = os.path.join(LIB_DIR, os.path.basename(body["lib_file"]))
+            if not os.path.isfile(fp):
+                return self.fail("cas 库里没有这个文件")
+            with open(fp, "rb") as f:
+                cas_bytes = f.read()
+        else:
+            cas_bytes = base64.b64decode(body.get("cas_b64", ""))
+        summary = cas_summary(cas_bytes)
+        video = body.get("video_name") or summary.get("name") or ""
+        if not video:
+            return self.fail("cas 里没有文件名,无法决定侧车名")
+        dest = (body.get("dir") or "/").rstrip("/") + "/" + video + ".cas"
+        ol_put(dest, cas_bytes)
+        return self.ok({"path": dest})
 
     def api_lib_delete(self, body):
         fp = os.path.join(LIB_DIR, os.path.basename(body.get("file") or ""))
@@ -633,6 +654,7 @@ textarea{min-height:64px}
 </div>
 <input id="parent139" value="/" placeholder="移动直调时父目录 fileId(根目录填 /)">
 <label class="mut"><input type="checkbox" id="savecas" style="width:auto" checked> 还原时同时把这份 .cas 存入 cas 库</label>
+<label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原确认成功后,把 .cas 也存到目标目录(视频旁边,仅经 OpenList 的还原)</label>
 <button class="green" onclick="doRestore('mobile')">还原到移动(直调139接口)</button>
 <button class="green" onclick="doRestore('tianyi')">还原到天翼(经OpenList)</button>
 <button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录(移动挂载可试)</button>
@@ -751,7 +773,14 @@ async function doRestore(to){
     if(to==='mobile'){ setSt(i,'✓ '+(d.msg||'已还原'),'good'); okN++; continue; }
     await sleepMs(1500);
     const ex = await api('/api/exists',{path:target,name:it.info.name});
-    if(ex.ok && ex.data.found){ setSt(i,'✓ 已确认文件在 '+target,'good'); okN++; }
+    if(ex.ok && ex.data.found){
+      let note='✓ 已确认文件在 '+target;
+      if($('sidecar').checked){
+        const sc = await api('/api/sidecar',{dir:target,video_name:it.info.name,cas_b64:it.b64});
+        note += sc.ok? '(.cas 已存到同目录)' : '(.cas 存同目录失败: '+sc.msg+')';
+      }
+      setSt(i,note,'good'); okN++;
+    }
     else { setSt(i,'⚠ 已提交,但在 '+target+' 还没看到这个文件(可能仍在处理,或保存失败,请看 OpenList 后台任务/日志)','err'); badN++; }
   }
   if($('savecas').checked) loadLib();
@@ -793,6 +822,11 @@ async function libRestore(f,to){
   if(to==='tianyi'||to==='openlist'){ let t=($('target189').value||'').trim(); if(!t){ t=prompt('OpenList 目标目录(天翼或移动挂载路径)','/天翼云盘/'); if(!t)return; } body.target=t; }
   else { const p=prompt('移动父目录 fileId(根目录 /)','/'); if(p===null)return; body.parent=p; }
   const d = await api('/api/lib/restore',body);
+  if(d.ok && (to==='tianyi'||to==='openlist') && $('sidecar').checked){
+    const sc = await api('/api/sidecar',{dir:body.target,lib_file:f});
+    alert(d.msg + (sc.ok? '\n.cas 已存到 '+sc.data.path : '\n.cas 存同目录失败: '+sc.msg));
+    return;
+  }
   alert(d.ok? d.msg : '失败: '+d.msg);
 }
 async function loadJobs(){

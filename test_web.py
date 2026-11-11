@@ -155,7 +155,7 @@ def main():
     check("首页含目录选择器与保存勾选", all(x in html for x in
           ["选目录".encode(), b'id="picker"', b'id="savecas"', b"pickerPick", b"loadPicker"]))
     check("首页含批量/zip 支持", all(x in html for x in
-          [b"multiple", b"unzipcas", b"batchItems", b"/api/exists"]))
+          [b"multiple", b"unzipcas", b"batchItems", b"/api/exists", b'id="sidecar"']))
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
@@ -279,6 +279,12 @@ def main():
                     "cas_name": cas_file, "target": ""})
     rapid = [b for k, b in captured["seed"] if k == "rapid_upload"][-1]
     check("空目标默认提交到根目录 /", d["ok"] and rapid["path"] == "/", d)
+    nput = len(captured["put"])
+    st, d, _ = req("POST", base + "/api/sidecar",
+                   {"dir": "/天翼云盘/中转", "video_name": FNAME, "cas_b64": sample_b64})
+    check("sidecar 存到视频旁边", d["ok"] and len(captured["put"]) == nput + 1
+          and urllib.parse.unquote(captured["put"][-1][0]) == "/天翼云盘/中转/" + FNAME + ".cas"
+          and captured["put"][-1][1] == sample_bytes, d)
 
     # i) 口令保护
     cas_web.WEB_PASSWORD = "pw123"
