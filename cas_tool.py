@@ -453,7 +453,8 @@ def upload_139_bytes(basic, parent_id, name, data):
     ret_parts = [p for p in (resp.get("partInfos") or [])
                  if isinstance(p, dict) and p.get("uploadUrl")]
     if not ret_parts:
-        raise RuntimeError("139 create 未返回上传地址,也未秒传命中")
+        raise RuntimeError("139 create 未返回上传地址,也未秒传命中(响应摘要: %s)"
+                           % json.dumps(resp, ensure_ascii=False)[:300])
     offsets = {}
     off = 0
     for p in parts:
@@ -485,17 +486,22 @@ def mkdir_139(basic, parent_id, name):
 
 
 def build_139_part_infos(size: int, part_size: int = 100 * MIB):
-    """秒传探测用的分片计划: 100MiB 一片(命中与否只看 contentHash,
-    分片计划仅在未命中、真要上传时才有意义;本工具不上传本体)。"""
+    """分片计划:100MiB 一片,每片带 parallelHashCtx.partOffset —— 照
+    OpenList 139 驱动 PartInfo 的原样;缺了它,139 的 create 不给
+    分片返回 uploadUrl(真上传会卡住,秒传探测不受影响)。"""
     if size <= 0:
-        return [{"partNumber": 1, "partSize": 0}]
+        return [{"partNumber": 1, "partSize": 0,
+                 "parallelHashCtx": {"partOffset": 0}}]
     parts = []
     remain = size
     num = 1
+    offset = 0
     while remain > 0:
         cur = min(part_size, remain)
-        parts.append({"partNumber": num, "partSize": cur})
+        parts.append({"partNumber": num, "partSize": cur,
+                      "parallelHashCtx": {"partOffset": offset}})
         remain -= cur
+        offset += cur
         num += 1
     return parts
 

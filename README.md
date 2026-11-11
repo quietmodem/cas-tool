@@ -148,7 +148,12 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v2.5.4(2026-11-11)。Web v2.5.4:① 按已
+版本: CLI v1.0.0 / Web v2.5.5(2026-11-11)。Web v2.5.5:修复移动
+旁存 .cas 上传失败——139 分片计划每片须带 parallelHashCtx
+.partOffset(照 OpenList 139 驱动),此前缺失导致 create 不返回
+uploadUrl、误报「未存成功」(视频秒传本身不受影响);旁存再失败
+时报错会带上 139 的响应摘要。
+Web v2.5.4:① 按已
 勾选 cas 的类型做防呆:选中的全是天翼版时点「填入移动云盘挂载
 目录」直接弹提示(反之亦然);选目录弹窗切到对不上的云选项卡
 时,窗格顶部显示红色警示。② 移动选目录确认后,完整路径直接写进

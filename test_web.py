@@ -520,6 +520,12 @@ def main():
     check("还原区有清空按钮", b"clearRestore" in html)
     check("类型不匹配有预警", b"casWarnFor" in html and b"warn139" in html)
     check("移动所选只写地址栏", b"pick139label" not in html and b"picked139Path" in html)
+    cas_creates = [p for (_u, p) in captured["create139"]
+                   if str(p.get("name", "")).endswith(".cas")]
+    lp = cas_creates[-1] if cas_creates else {}
+    check("139 上传分片带 parallelHashCtx",
+          bool(lp) and lp["partInfos"][0].get("parallelHashCtx", {}).get("partOffset") == 0,
+          lp)
 
     # t) 移动密码登录回退(移植 OpenList 139 驱动的机制)
     check("AES NIST 向量(ECB-128)",
