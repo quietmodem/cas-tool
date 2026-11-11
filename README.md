@@ -147,7 +147,13 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v1.8.1(2026-11-11)。Web v1.8.1:修「后台填了 Token
+版本: CLI v1.0.0 / Web v1.9.0(2026-11-11)。Web v1.9.0:移动直调还原优化——
+不再默认落移动云盘根目录:与天翼共用目标目录,后端经 OpenList fs/get 把目录
+换算成 139 的 fileId 再还原(手填 fileId 仍可覆盖);直调成功后同样按勾选把
+.cas 存到目标目录视频旁边。背景:直调接口 2026-11-11 首次真实账号实测即
+秒传命中,只是旧逻辑 parent 只认 fileId、留空即根目录,与用户预期的
+OpenList 目录对不上。
+Web v1.8.1:修「后台填了 Token
 反而连不上(token is invalidated)」——页面里存的 Token 若失效会盖住 compose
 里可用的那个;现在保存 Token/地址前先实测这组配置,不通直接拒绝保存并说明
 原因,粘贴时带 Bearer 前缀自动剥离,设置页可勾选清除页面 Token 回退环境变量,

@@ -59,6 +59,10 @@ class MockOL(BaseHTTPRequestHandler):
                 content = []
             return self._json({"code": 200, "data": {"content": content, "total": len(content)}})
         if self.path == "/api/fs/get":
+            if body.get("path") == "/移动云盘/中转":
+                return self._json({"code": 200, "data": {"name": "中转",
+                                                         "is_dir": True,
+                                                         "id": "CATID-999"}})
             if str(body.get("path", "")).endswith(".cas"):
                 return self._json({"code": 200, "data": {
                     "name": "x.cas", "size": len(SCAN_CAS),
@@ -251,6 +255,16 @@ def main():
     # f) 还原到移动(mock 命中)
     st, d, _ = req("POST", base + "/api/restore139", {"cas_b64": sample_b64, "parent": "/"})
     check("restore139 命中", d["ok"], d)
+
+    # p) 移动直调:按目标目录换算 fileId / 无目录落根 / 手填优先
+    st, d, _ = req("POST", base + "/api/restore139",
+                   {"cas_b64": sample_b64, "target": "/移动云盘/中转"})
+    check("直调按目录还原", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "CATID-999", d)
+    st, d, _ = req("POST", base + "/api/restore139", {"cas_b64": sample_b64, "target": ""})
+    check("直调无目录落根目录", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
+    st, d, _ = req("POST", base + "/api/restore139",
+                   {"cas_b64": sample_b64, "parent": "MANUAL-ID", "target": "/移动云盘/中转"})
+    check("手填 fileId 优先", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "MANUAL-ID", d)
     hdrs, payload = captured["create139"][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")

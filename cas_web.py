@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.8.1"
+VERSION = "1.9.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -603,7 +603,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_gen(body)
             if path == "/api/restore139":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
-                ok, msg = restore_139(cas_bytes, body.get("parent") or "/")
+                parent = str(body.get("parent") or "").strip()
+                tdir = str(body.get("target") or "").strip()
+                where = ""
+                if not parent:
+                    if tdir and tdir != "/":
+                        try:
+                            info = ol_get(tdir)
+                        except Exception as e:
+                            return self.fail("解析目标目录失败: %s" % e)
+                        parent = str((info or {}).get("id")
+                                     or (info or {}).get("fileId") or "").strip()
+                        if not parent:
+                            return self.fail("目标目录 %s 没拿到移动 fileId"
+                                             "(确认它是移动云盘挂载下的目录)" % tdir)
+                        where = "(目标目录 %s)" % tdir
+                    else:
+                        parent = "/"
+                        where = "(移动云盘根目录)"
+                ok, msg = restore_139(cas_bytes, parent)
+                if ok and where:
+                    msg += where
                 return self.ok(msg=msg) if ok else self.fail(msg)
             if path == "/api/restore189":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
@@ -792,8 +812,8 @@ textarea{min-height:64px}
 <button class="small grey" onclick="togglePicker('target189')">📁 选目录</button></div>
 <div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼主目录</button>
 <button class="small grey" onclick="fillHome('139')">填入移动主目录</button></div>
-<input id="parent139" value="/" placeholder="移动直调时父目录 fileId(根目录填 /)">
-<label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原确认成功后,把 .cas 也存到目标目录(视频旁边,仅经 OpenList 的还原)</label>
+<input id="parent139" value="" placeholder="移动直调父目录 fileId(高级,一般留空;留空按上方目标目录还原)">
+<label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,把 .cas 也存到目标目录(视频旁边)</label>
 <button class="green" onclick="doRestore('mobile')">还原到移动(直调139接口)</button>
 <button class="green" onclick="doRestore('tianyi')">还原到天翼(经OpenList)</button>
 <button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录</button>
@@ -1095,11 +1115,18 @@ async function restoreCore(to, items, setStatus){
     if(!it.info){ badN++; continue; }
     if(it._skip){ continue; }
     setStatus(i,'还原中…','mut');
-    const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||'/'}
+    const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||'',target:target}
                               : {cas_b64:it.b64,cas_name:it.name,target:target};
     const d = await api(url,body);
     if(!d.ok){ setStatus(i,'✗ '+d.msg,'err'); badN++; continue; }
-    if(to==='mobile'){ setStatus(i,'✓ '+(d.msg||'已还原'),'good'); okN++; continue; }
+    if(to==='mobile'){
+      let note = '✓ '+(d.msg||'已还原');
+      if($('sidecar').checked && !String($('parent139').value||'').trim()){
+        const sc = await api('/api/sidecar',{dir:target,video_name:it.info.name,cas_b64:it.b64});
+        note += sc.ok? '(.cas 已存到同目录)' : '(.cas 存同目录失败: '+sc.msg+')';
+      }
+      setStatus(i,note,'good'); okN++; continue;
+    }
     await sleepMs(1500);
     const ex = await api('/api/exists',{path:target,name:it.info.name});
     if(ex.ok && ex.data.found){
