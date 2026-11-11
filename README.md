@@ -148,7 +148,17 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v2.2.0(2026-11-11)。Web v2.2.0:设置页重组为
+版本: CLI v1.0.0 / Web v2.3.0(2026-11-11)。Web v2.3.0:移动云盘彻底
+脱离 OpenList 路径——设置页删掉移动挂载目录/额外目录/ID 对照三项,
+还原只认直连选目录的 fileId(或直连主目录/根目录),OpenList 路径不再
+解析换算(resolve_139_parent 已删除),目录校验只保留天翼侧。移动还原
+的 .cas 旁存改为直连真上传:新增 upload_139_bytes(create 拿分片地址 →
+PUT → complete,照 OpenList 139 驱动 Put 流程),还原接口带 sidecar
+标志时在服务端对实际落点目录上传 `<视频名>.cas`,不再经 OpenList、
+也不再因手填 fileId 被跳过。状态行改为「天翼云盘 OpenList 已连通」,
+天翼区新增「接入方式」选项(tianyi_access,目前只有 OpenList 可用,
+直连选项禁用预留;状态行文案按该选项显示)。
+Web v2.2.0:设置页重组为
 「☁️ 天翼云盘」(接入方式 OpenList:地址/Token + 挂载目录 + 额外目录)
 与「📱 移动云盘」(接入方式直连:手机号/AUTH/密码登录回退 + 挂载目录 +
 直连主目录 + 额外目录 + 文件夹 ID 对照)两区,口令移到「页面与安全」;

@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -95,41 +95,6 @@ def ol_storages():
         raise RuntimeError("读取 OpenList 存储列表失败: %s"
                            % (data.get("message") or data.get("code")))
     return (data.get("data") or {}).get("content") or []
-
-
-def resolve_139_parent(tdir):
-    """目标目录 -> 139 父目录 fileId。优先级:设置里的文件夹 ID 对照 >
-    fs/get 的 id > 父目录列表中该子项的 id > 挂载根目录的 root_folder_id。"""
-    mp = load_settings().get("mobile_dir_ids") or {}
-    if mp.get(tdir):
-        return mp[tdir], "(设置里的文件夹ID)"
-    info = ol_get(tdir)
-    raw_id = (info or {}).get("id") or (info or {}).get("fileId") or ""
-    fid = str(raw_id).strip()
-    if fid and fid != tdir:
-        return fid, ""
-    parent_dir, _, name = tdir.rpartition("/")
-    parent_dir = parent_dir or "/"
-    try:
-        for e in ol_list(parent_dir, refresh=True) or []:
-            if e.get("name") == name:
-                fid2 = str(e.get("id") or "").strip()
-                if fid2 and fid2 != tdir:
-                    return fid2, ""
-                break
-    except Exception:  # noqa: BLE001
-        pass
-    for st in ol_storages():
-        mnt = str(st.get("mount_path") or "").rstrip("/")
-        if mnt and mnt == tdir.rstrip("/"):
-            try:
-                add = json.loads(st.get("addition") or "{}")
-            except ValueError:
-                add = {}
-            return str(add.get("root_folder_id") or "").strip() or "/", "(挂载根目录)"
-    raise ValueError("目录 %s 没解析出移动 fileId(fs/get 给的 id 是 %r)。"
-                     "可以在「设置」的移动文件夹 ID 对照里给这个目录填上 139 的文件夹 ID 再重试"
-                     % (tdir, raw_id))
 
 
 def ol_download_iter(path, info=None):
@@ -477,7 +442,7 @@ SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
                  "cas139_phone", "cas139_auth", "web_pw_hash",
                  "cas139_user", "cas139_pass", "cas139_mail_cookies",
                  "cas139_sms_code", "cas139_udid",
-                 "mobile_home_id", "mobile_home_name")
+                 "mobile_home_id", "mobile_home_name", "tianyi_access")
 PATH_KEYS = ("tianyi_paths", "mobile_paths")
 
 
@@ -582,6 +547,9 @@ def update_settings(body):
         cur["cas139_auth"] = auth_in
     if "cas139_user" in body:
         cur["cas139_user"] = str(body.get("cas139_user") or "").strip()
+    if "tianyi_access" in body:
+        cur["tianyi_access"] = ("direct" if str(body.get("tianyi_access")) == "direct"
+                                else "openlist")
     if "mobile_home_id" in body:
         cur["mobile_home_id"] = str(body.get("mobile_home_id") or "").strip()
     if "mobile_home_name" in body:
@@ -656,6 +624,7 @@ def public_settings(s=None):
             "cas139_pass_set": bool(s["cas139_pass"]),
             "cas139_mail_cookies_set": bool(s["cas139_mail_cookies"]),
             "cas139_sms_code_set": bool(s["cas139_sms_code"]),
+            "tianyi_access": s.get("tianyi_access") or "openlist",
             "mobile_home_id": s["mobile_home_id"],
             "mobile_home_name": s["mobile_home_name"],
             "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD)}
@@ -860,22 +829,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_gen(body)
             if path == "/api/restore139":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
-                parent = str(body.get("parent") or "").strip()
-                tdir = str(body.get("target") or "").strip()
-                where = ""
-                if not parent:
-                    if tdir and tdir != "/":
-                        try:
-                            parent, note = resolve_139_parent(tdir)
-                        except Exception as e:
-                            return self.fail("解析目标目录失败: %s" % e)
-                        where = "(目标目录 %s%s)" % (tdir, note)
-                    else:
-                        parent = "/"
-                        where = "(移动云盘根目录)"
+                parent = str(body.get("parent") or "").strip() or "/"
                 ok, msg = restore_139(cas_bytes, parent)
-                if ok and where:
-                    msg += where
+                if ok and parent == "/":
+                    msg += "(移动云盘根目录)"
+                if ok and body.get("sidecar"):
+                    try:
+                        obj = ct.decode_cas_bytes(cas_bytes)
+                        ct.upload_139_bytes(m139_basic(), parent,
+                                            (obj.get("name") or "file") + ".cas",
+                                            cas_bytes)
+                        msg += "(.cas 已存到同目录)"
+                    except Exception as e:  # noqa: BLE001
+                        msg += "(.cas 存同目录失败: %s)" % str(e)[:120]
                 return self.ok(msg=msg) if ok else self.fail(msg)
             if path == "/api/restore189":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
@@ -894,7 +860,9 @@ class Handler(BaseHTTPRequestHandler):
     # -- API 实现 -------------------------------------------------------------
     def api_status(self):
         base, token = ol_cfg()
-        status = {"version": VERSION, "openlist_configured": bool(base and token),
+        status = {"version": VERSION,
+                  "tianyi_access": load_settings().get("tianyi_access") or "openlist",
+                  "openlist_configured": bool(base and token),
                   "openlist_ok": False, "openlist_msg": "",
                   "m139_configured": bool(_m139_cfg()["auth"]
                                           or _m139_cfg()["cookies"]
@@ -1059,8 +1027,7 @@ button:disabled{opacity:.35}
 <button class="small grey" onclick="togglePicker()">关闭</button></div>
 <div id="crumbs" class="crumbs"></div>
 <div class="row"><input id="pickerfilter" class="grow" placeholder="筛选本层文件夹…" oninput="renderPicker()">
-<button class="small grey" id="ph189" onclick="pickerHome('189')">天翼挂载目录</button>
-<button class="small grey" id="ph139" onclick="pickerHome('139')">移动挂载目录</button></div>
+<button class="small grey" id="ph189" onclick="pickerHome('189')">天翼挂载目录</button></div>
 <div id="pickerlist"></div>
 </div></div>
 <div id="m139pick" class="overlay" style="display:none" onclick="if(event.target===this)close139Pick()"><div class="sheet">
@@ -1082,9 +1049,8 @@ button:disabled{opacity:.35}
 <div id="restorebox" style="display:none">
 <div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼挂载目录,移动按钮用移动挂载目录)">
 <button class="small grey" onclick="togglePicker('target189')">📁 选目录</button></div>
-<div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼主目录</button>
-<button class="small grey" onclick="fillHome('139')">填入移动主目录</button></div>
-<input id="parent139" value="" placeholder="移动直调父目录 fileId(高级,一般留空;留空按上方目标目录还原)">
+<div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼挂载目录</button></div>
+<input id="parent139" value="" placeholder="移动直调父目录 fileId(高级,一般留空;留空用直连主目录,没设则根目录)">
 <div class="row"><button class="small grey" onclick="open139Pick()">📁 从移动云盘选目录(直连)</button><span id="pick139label" class="mut"></span></div>
 <div class="mut" id="home139label"></div>
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,把 .cas 也存到目标目录(视频旁边)</label>
@@ -1119,8 +1085,7 @@ button:disabled{opacity:.35}
 <div class="row"><button class="small grey" onclick="goUp()">⬆ 上级</button>
 <span class="grow" id="curpath">/</span>
 <button class="small grey" onclick="loadList()">刷新</button></div>
-<div class="row"><button class="small grey" onclick="goHome('189')">跳到天翼挂载目录</button>
-<button class="small grey" onclick="goHome('139')">跳到移动挂载目录</button></div>
+<div class="row"><button class="small grey" onclick="goHome('189')">跳到天翼挂载目录</button></div>
 <label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后把 .cas 上传回同目录(视频旁边,推荐)</label>
 <div id="entries"></div></div>
 <div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 .cas</h2>
@@ -1136,7 +1101,9 @@ button:disabled{opacity:.35}
 
 <div id="tab-settings" style="display:none">
 <div class="card"><h2>☁️ 天翼云盘</h2>
-<div class="mut">接入方式:<b>OpenList</b>(经 OpenList 种子秒传还原;浏览/生成也走它)。在这里配好就行,不用改 docker-compose;配置存在群晖的工具数据目录里。密钥类留空 = 不修改,页面只显示已设置/未设置,不回显明文。</div>
+<div class="mut">在这里配好就行,不用改 docker-compose;配置存在群晖的工具数据目录里。密钥类留空 = 不修改,页面只显示已设置/未设置,不回显明文。</div>
+<label class="mut">接入方式</label>
+<select id="cfgaccess"><option value="openlist">OpenList(经 OpenList 种子秒传还原;浏览/生成也走它)</option><option value="direct" disabled>直连(开发中)</option></select>
 <label class="mut">OpenList 地址</label>
 <input id="cfgurl" placeholder="如 http://192.168.111.2:5244">
 <label class="mut">OpenList Token <span id="tokstate" class="kv"></span></label>
@@ -1152,7 +1119,7 @@ button:disabled{opacity:.35}
 <button class="small grey" onclick="togglePicker('append:paths189')">📁 添加一个目录</button>
 </div>
 <div class="card"><h2>📱 移动云盘</h2>
-<div class="mut">接入方式:<b>直连 139 接口</b>(还原/浏览/生成都不经 OpenList);下面的挂载目录只在经 OpenList 浏览、旁存 .cas、目录校验和路径解析时用。</div>
+<div class="mut">接入方式:<b>直连 139 接口</b>(还原/浏览/生成/旁存 .cas 全部直连,不经 OpenList,不需要填任何 OpenList 路径)。</div>
 <label class="mut">移动云盘手机号(可不填,AUTH 为完整形式时用不到)</label>
 <input id="cfgphone" placeholder="手机号">
 <label class="mut">移动 AUTH <span id="authstate" class="kv"></span></label>
@@ -1171,24 +1138,14 @@ button:disabled{opacity:.35}
 <div class="row"><button class="small green" onclick="relogin139()">🔄 立即刷新移动授权</button><span id="reloginmsg" class="mut"></span></div>
 <label class="mut"><input type="checkbox" id="cfgpassclear" style="width:auto"> 清除 139 密码</label>
 <label class="mut"><input type="checkbox" id="cfgcookclear" style="width:auto"> 清除邮箱 Cookie</label>
-<label class="mut">挂载目录(移动云盘在 OpenList 里的目录)</label>
-<div class="row"><input id="home139" class="grow" placeholder="如 /TV/移动云盘">
-<button class="small grey" onclick="togglePicker('home139')">📁 选目录</button></div>
-<div class="mut">首页选还原目录时只能在这个目录和它的子目录里选;移动还原目标留空、且没设直连主目录时用它(经 OpenList 解析成文件夹 ID)。</div>
 <div class="row"><span class="mut">移动主目录(直连,不经 OpenList):</span><span id="home139d" class="grow">未设置</span><button class="small grey" onclick="clear139Home()">清除</button></div>
 <div class="mut">设置方法:还原页点「从移动云盘选目录(直连)」,选好文件夹后点弹窗里的「设为主目录」。设了之后,移动还原目标留空直接按 ID 落这个文件夹。</div>
-<label class="mut">额外目录(可多个,一行一个;还原校验用)</label>
-<textarea id="paths139" placeholder="/TV/移动云盘&#10;/移动云盘"></textarea>
-<button class="small grey" onclick="togglePicker('append:paths139')">📁 添加一个目录</button>
-<label class="mut">移动文件夹 ID 对照(经 OpenList 路径还原时用,一行一个)</label>
-<textarea id="dirids139" placeholder="/TV/移动云盘/中转 = 文件夹ID"></textarea>
-<div class="mut">填了对照的目录,按路径还原时直接按 ID 落,不再靠自动解析。ID 获取:电脑登录 yun.139.com 进到那个文件夹,F12 → 网络 → 找 file/list 请求,看请求里的 parentFileId。</div>
 </div>
 <div class="card"><h2>🔒 页面与安全</h2>
 <label class="mut">页面访问口令 <span id="pwstate" class="kv"></span></label>
 <input id="cfgpw" type="password" placeholder="留空 = 不修改">
 <label class="mut"><input type="checkbox" id="cfgpwclear" style="width:auto"> 清除访问口令(打开页面不再要口令)</label>
-<div class="mut">校验规则:天翼 cas 还到不属于天翼的目录、移动 cas 还到不属于移动的目录,还原前会弹窗提醒(挂载目录自动算作本云路径,不用重复填)。额外目录清单留空 = 只认挂载目录。</div>
+<div class="mut">校验规则:天翼 cas 还到不属于天翼的目录,还原前会弹窗提醒(挂载目录自动算作天翼路径,不用重复填)。额外目录清单留空 = 只认挂载目录。移动走直连选目录,不做路径校验。</div>
 <button onclick="saveSettings()">保存设置</button>
 <div id="setmsg" class="msg"></div>
 <div class="mut">所有设置保存在群晖的工具数据目录(settings.json),所有设备共用同一份。docker-compose 里的同名环境变量若也填了,页面设置优先,环境变量只作兜底——访问口令忘了时,在 compose 里临时加 WEB_PASSWORD 就能救急登录。</div>
@@ -1209,8 +1166,9 @@ async function status(){
   const d = await api('/api/status');
   if(!d.ok){ $('status').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
   const s=d.data; $('ver').textContent='v'+s.version;
+  const tmode = s.tianyi_access==='direct'? '直连' : 'OpenList';
   $('status').innerHTML =
-    (s.openlist_configured? (s.openlist_ok? '🟢 OpenList '+esc(s.openlist_msg) : '🔴 OpenList 未连通: '+esc(s.openlist_msg)) : '🔴 未配置 OPENLIST_URL / OPENLIST_TOKEN')
+    (s.openlist_configured? (s.openlist_ok? '🟢 天翼云盘 '+tmode+' '+esc(s.openlist_msg) : '🔴 天翼云盘 '+tmode+' 未连通: '+esc(s.openlist_msg)) : '🔴 天翼云盘未配置(设置页天翼云盘区填 OpenList 地址 / Token)')
     +'<br>'+(s.m139_configured? (s.m139_ok? '🟢 移动直连已连通' : '🔴 移动直连未通: '+esc(s.m139_msg||'')) : '🟡 未配置移动凭据(设置页可填;移动还原不可用,天翼不受影响)');
 }
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();
@@ -1310,12 +1268,10 @@ async function loadSettings(){
   const d = await api('/api/settings');
   if(!d.ok) return;
   SETTINGS=d.data;
-  $('home189').value=SETTINGS.tianyi_home||''; $('home139').value=SETTINGS.mobile_home||'';
+  $('home189').value=SETTINGS.tianyi_home||''; $('cfgaccess').value=SETTINGS.tianyi_access||'openlist';
   updateHome139Label();
   $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
   $('paths189').value=(SETTINGS.tianyi_paths||[]).join('\n');
-  $('paths139').value=(SETTINGS.mobile_paths||[]).join('\n');
-  $('dirids139').value=SETTINGS.mobile_dir_ids_text||'';
   $('cfgtoken').value = SETTINGS.openlist_token_set? MASK : '';
   $('cfgauth').value = SETTINGS.cas139_auth_set? MASK : '';
   $('cfguser').value=SETTINGS.cas139_user||'';
@@ -1331,10 +1287,8 @@ async function loadSettings(){
   $('pwstate').textContent = SETTINGS.web_password_set? '(已设置)' : '(未设置)';
 }
 async function saveSettings(){
-  const body={tianyi_home:$('home189').value.trim(), mobile_home:$('home139').value.trim(),
+  const body={tianyi_home:$('home189').value.trim(), tianyi_access:$('cfgaccess').value,
     tianyi_paths:$('paths189').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    mobile_paths:$('paths139').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    mobile_dir_ids_text:$('dirids139').value,
     openlist_url:$('cfgurl').value.trim(), openlist_token:secVal('cfgtoken'),
     cas139_phone:$('cfgphone').value.trim(), cas139_auth:secVal('cfgauth'),
     web_password:secValRaw('cfgpw'), clear_web_password:$('cfgpwclear').checked,
@@ -1362,7 +1316,6 @@ function togglePicker(targetId){
     if(pickerTarget==='target189' || pickerTarget==='scanpath'){
       const roots=[];
       if(SETTINGS.tianyi_home) roots.push({label:'☁️ 天翼云盘', path:SETTINGS.tianyi_home});
-      if(SETTINGS.mobile_home) roots.push({label:'📱 移动云盘', path:SETTINGS.mobile_home});
       if(roots.length){
         pickerScope={roots:roots, base:''};
         const cur=($(pickerTarget).value||'').trim();
@@ -1374,7 +1327,6 @@ function togglePicker(targetId){
     }
     if(!pickerScope && targetId && targetId.indexOf('append:')!==0){ pickerPath = ($(pickerTarget).value||'').trim() || '/'; }
     $('ph189').style.display = pickerScope? 'none':'';
-    $('ph139').style.display = pickerScope? 'none':'';
   }
   p.style.display=show?'flex':'none'; if(show) loadPicker();
 }
@@ -1483,15 +1435,15 @@ function itemCloud(it){
 async function restoreCore(to, items, setStatus){
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   let target = $('target189').value.trim();
-  const directHome139 = (to==='mobile' && !target && !$('parent139').value.trim() && SETTINGS.mobile_home_id)? SETTINGS.mobile_home_id : '';
-  if(!target) target = (to==='tianyi'? SETTINGS.tianyi_home : SETTINGS.mobile_home) || '/';
+  const directHome139 = (to==='mobile' && !$('parent139').value.trim() && SETTINGS.mobile_home_id)? SETTINGS.mobile_home_id : '';
+  if(to!=='mobile' && !target) target = SETTINGS.tianyi_home || '/';
   {
     const warns=[];
     for(const it of items){
       if(!it.info || it._skip) continue;
       const c=itemCloud(it);
       if(to==='mobile'){
-        if(!directHome139 && inCloud(target,'139')===false) warns.push('《'+it.info.name+'》要还原到移动,但目标目录 '+target+' 不在设置的移动云盘路径下');
+        // 移动走直连选目录,不做 OpenList 路径校验
       } else if(to==='tianyi'){
         if(inCloud(target,'189')===false) warns.push('《'+it.info.name+'》要还原到天翼,但目标目录 '+target+' 不在设置的天翼云盘路径下');
       } else if(c==='189'){
@@ -1513,17 +1465,12 @@ async function restoreCore(to, items, setStatus){
     if(!it.info){ badN++; continue; }
     if(it._skip){ continue; }
     setStatus(i,'还原中…','mut');
-    const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||directHome139||'',target:target}
+    const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||directHome139||'',sidecar:!!$('sidecar').checked}
                               : {cas_b64:it.b64,cas_name:it.name,target:target};
     const d = await api(url,body);
     if(!d.ok){ setStatus(i,'✗ '+d.msg,'err'); badN++; continue; }
     if(to==='mobile'){
-      let note = '✓ '+(d.msg||'已还原');
-      if($('sidecar').checked && !String($('parent139').value||'').trim()){
-        const sc = await api('/api/sidecar',{dir:target,video_name:it.info.name,cas_b64:it.b64});
-        note += sc.ok? '(.cas 已存到同目录)' : '(.cas 存同目录失败: '+sc.msg+')';
-      }
-      setStatus(i,note,'good'); okN++; continue;
+      setStatus(i,'✓ '+(d.msg||'已还原'),'good'); okN++; continue;
     }
     await sleepMs(1500);
     const ex = await api('/api/exists',{path:target,name:it.info.name});

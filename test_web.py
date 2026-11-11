@@ -25,7 +25,7 @@ FNAME = "测试电影.mkv"
 FPATH = "/天翼云盘/" + FNAME
 SCAN_CAS = None  # main() 里用真实 cas_tool 编码生成
 
-captured = {"put": [], "seed": [], "create139": []}
+captured = {"put": [], "seed": [], "create139": [], "put139": b"", "complete139": None}
 
 
 class MockOL(BaseHTTPRequestHandler):
@@ -236,12 +236,38 @@ class Mock139(BaseHTTPRequestHandler):
             return
         if self.path == "/hcy/file/create":
             captured["create139"].append((dict(self.headers), json.loads(raw)))
-            data = json.dumps({"code": "0000", "data": {"fileId": "F123", "exist": True}}).encode()
+            pl = json.loads(raw)
+            if str(pl.get("name") or "").endswith(".cas"):
+                up = "http://127.0.0.1:%d/rawup139" % self.server.server_address[1]
+                data = json.dumps({"code": "0000", "data": {
+                    "fileId": "CASF1", "uploadId": "UP1", "exist": False,
+                    "partInfos": [{"partNumber": 1, "uploadUrl": up}]}}).encode()
+            else:
+                data = json.dumps({"code": "0000", "data": {"fileId": "F123", "exist": True}}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            return
+        if self.path == "/hcy/file/complete":
+            captured["complete139"] = json.loads(raw)
+            data = json.dumps({"code": "0000", "data": {}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_PUT(self):
+        if self.path == "/rawup139":
+            n = int(self.headers.get("Content-Length") or 0)
+            captured["put139"] = self.rfile.read(n)
+            self.send_response(200)
+            self.end_headers()
             return
         self.send_response(404)
         self.end_headers()
@@ -317,7 +343,8 @@ def main():
           [b"multiple", b"unzipcas", b"batchItems", b"/api/exists", b'id="sidecar"']))
     check("首页含三选项卡与设置页", all(x in html for x in
           [b'id="tab-restore"', b'id="tab-gen"', b'id="tab-settings"', b"switchTab",
-           b'id="home189"', b'id="home139"', b"/api/settings"]))
+           b'id="home189"', b'id="cfgaccess"', b"/api/settings"])
+          and b'id="home139"' not in html)
     check("首页含新选择器(面包屑/筛选)且无 cas 库", all(x in html for x in
           [b'id="pickerfilter"', b'id="crumbs"', b"renderCrumbs", b"pickerHome"])
           and b"saveToLib" not in html and b'id="lib"' not in html)
@@ -326,7 +353,8 @@ def main():
     check("首页含扫描独立列表与后台配置区", all(x in html for x in
           [b"renderScan", b"scanRestore", b'id="scanlist"', b'id="cfgurl"', b'id="cfgtoken"', b'id="cfgpw"']))
     check("首页含云盘路径校验", all(x in html for x in
-          [b'id="paths189"', b'id="paths139"', b"cloudPathSet", b"inCloud", b"itemCloud"]))
+          [b'id="paths189"', b"cloudPathSet", b"inCloud", b"itemCloud"])
+          and b'id="paths139"' not in html)
     check("v1.10 还原只剩两个按钮,无 OL 按钮", all(x in html for x in
           ["还原到天翼云盘".encode(), "还原到移动云盘".encode(), b"batchall", b"batchAll"])
           and "经 OpenList 还原".encode() not in html and "OL按钮".encode() not in html)
@@ -392,28 +420,28 @@ def main():
     st, d, _ = req("POST", base + "/api/restore139", {"cas_b64": sample_b64, "parent": "/"})
     check("restore139 命中", d["ok"], d)
 
-    # p) 移动直调:按目标目录换算 fileId / 无目录落根 / 手填优先
+    # p) 移动直调(v2.3.0 起):只认 parent fileId,OpenList 路径不再解析
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "target": "/移动云盘/中转"})
-    check("直调按目录还原", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "CATID-999", d)
+    check("只给 OpenList 路径时落根目录", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
     st, d, _ = req("POST", base + "/api/restore139", {"cas_b64": sample_b64, "target": ""})
     check("直调无目录落根目录", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "parent": "MANUAL-ID", "target": "/移动云盘/中转"})
     check("手填 fileId 优先", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "MANUAL-ID", d)
 
-    # q) 挂载根目录:fs/get 无 id -> 存储列表 root_folder_id
+    # q) 旧的挂载根解析已下线:任何 OpenList 路径都不再换算
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "target": "/移动云盘"})
-    check("挂载根目录还原到139根", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
+    check("挂载根路径落139根", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "target": "/移动盘2"})
-    check("挂载根目录用其 root_folder_id", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "ROOTCAT", d)
+    check("另一挂载路径同样落根", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
 
-    # r) 父目录列表取子项 id;设置里的文件夹 ID 对照最优先
+    # r) ID 对照设置仍可存(兼容),但不再影响直连还原落点
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "target": "/移动云盘/备份"})
-    check("父目录列表取子项 id", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "LISTID-555", d)
+    check("子目录路径同样落根", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
     st, d, _ = req("POST", base + "/api/settings",
                    {"mobile_dir_ids_text": "/TV/移动云盘/中转 = FID-777\n坏行\n/另一目录,FID-888"})
     check("文件夹ID对照保存", d["ok"], d)
@@ -422,7 +450,7 @@ def main():
     check("对照回显含两条", "FID-777" in txt and "FID-888" in txt and "坏行" not in txt, d)
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "target": "/TV/移动云盘/中转"})
-    check("对照优先于自动解析", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "FID-777", d)
+    check("对照不再影响直连落点", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "/", d)
 
     # s) 移动直连:列表 / 生成 / 状态探针
     st, d, _ = req("POST", base + "/api/m139/list", {"parent": "/"})
@@ -538,7 +566,23 @@ def main():
     check("天翼区标注 OpenList 接入", "接入方式" in html and "OpenList" in html)
     check("选择器带挂载目录限定", "pickerScope" in html and "pickerEnterRoot" in html)
     check("旧的主目录设置卡已移除", "主目录设置" not in html)
-    hdrs, payload = captured["create139"][-1]
+
+    # x) v2.3.0:移动旁存走直连上传(create→PUT→complete)+ 天翼接入方式
+    ct.FILE_COMPLETE_URL = "http://127.0.0.1:%d/hcy/file/complete" % mock_139.server_address[1]
+    st, d, _ = req("POST", base + "/api/settings", {"tianyi_access": "openlist"})
+    st, d, _ = req("GET", base + "/api/settings")
+    check("天翼接入方式设置往返", d["data"].get("tianyi_access") == "openlist", d)
+    st, d, _ = req("POST", base + "/api/restore139",
+                   {"cas_b64": sample_b64, "parent": "D1", "sidecar": True})
+    check("移动还原带旁存成功", d["ok"] and "已存到同目录" in d["msg"], d)
+    check("旁存 .cas 字节经 PUT 直传",
+          captured.get("put139") == base64.b64decode(sample_b64),
+          str(captured.get("put139"))[:60])
+    check("旁存 complete 已调",
+          (captured.get("complete139") or {}).get("fileId") == "CASF1",
+          captured.get("complete139"))
+    hdrs, payload = [c for c in captured["create139"]
+                     if str(c[1].get("name") or "").endswith(".mkv")][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")
     check("139 请求带 Authorization 与三段签名",

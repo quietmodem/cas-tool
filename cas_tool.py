@@ -432,6 +432,50 @@ def download_url_139(basic: str, file_id: str):
     return url
 
 
+FILE_COMPLETE_URL = PERSONAL_HOST + "/file/complete"
+
+
+def upload_139_bytes(basic, parent_id, name, data):
+    """把小文件真正上传进 139 的某个文件夹(用于 .cas 旁存这类非秒传内容)。
+    流程照 OpenList 139 驱动 Put(personal_new):create 拿分片上传地址 →
+    PUT 各分片 → complete。内容已在云端时 create 直接 exist 命中。"""
+    sha = hashlib.sha256(data).hexdigest()
+    size = len(data)
+    parts = build_139_part_infos(size)
+    resp = personal_call(basic, FILE_CREATE_URL, {
+        "contentHash": sha, "contentHashAlgorithm": "SHA256",
+        "contentType": "application/octet-stream", "parallelUpload": False,
+        "partInfos": parts, "size": size,
+        "parentFileId": parent_id or "/", "name": name,
+        "type": "file", "fileRenameMode": "auto_rename"})
+    if resp.get("exist"):
+        return {"fileId": resp.get("fileId") or "", "exist": True}
+    ret_parts = [p for p in (resp.get("partInfos") or [])
+                 if isinstance(p, dict) and p.get("uploadUrl")]
+    if not ret_parts:
+        raise RuntimeError("139 create 未返回上传地址,也未秒传命中")
+    offsets = {}
+    off = 0
+    for p in parts:
+        offsets[p["partNumber"]] = (off, p["partSize"])
+        off += p["partSize"]
+    for p in sorted(ret_parts, key=lambda x: x.get("partNumber") or 0):
+        o, sz = offsets[p["partNumber"]]
+        req = urllib.request.Request(
+            p["uploadUrl"], data=data[o:o + sz], method="PUT", headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": "https://yun.139.com",
+                "Referer": "https://yun.139.com/"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            if r.status != 200:
+                raise RuntimeError("分片上传 HTTP %s" % r.status)
+    personal_call(basic, FILE_COMPLETE_URL, {
+        "contentHash": sha, "contentHashAlgorithm": "SHA256",
+        "fileId": resp.get("fileId") or "",
+        "uploadId": resp.get("uploadId") or ""})
+    return {"fileId": resp.get("fileId") or "", "exist": False}
+
+
 def build_139_part_infos(size: int, part_size: int = 100 * MIB):
     """秒传探测用的分片计划: 100MiB 一片(命中与否只看 contentHash,
     分片计划仅在未命中、真要上传时才有意义;本工具不上传本体)。"""
