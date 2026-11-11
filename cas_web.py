@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -269,11 +269,103 @@ def run_gen_job139(jid, file_id, name, size):
 # 还原(与 cas_tool CLI 同逻辑,输入为 cas 字节)
 # ---------------------------------------------------------------------------
 
+_M139_LOCK = threading.Lock()
+
+
+def _m139_cfg():
+    s = load_settings()
+    env_phone, env_auth = ct.get_139_credentials()
+    return {"phone": s["cas139_phone"] or env_phone,
+            "auth": s["cas139_auth"] or env_auth,
+            "user": s["cas139_user"], "pw": s["cas139_pass"],
+            "cookies": s["cas139_mail_cookies"], "sms": s["cas139_sms_code"]}
+
+
+def _m139_persist(res):
+    patch = {}
+    if res.get("auth"):
+        patch["cas139_auth"] = res["auth"]
+    if res.get("mail_cookies"):
+        patch["cas139_mail_cookies"] = res["mail_cookies"]
+    if res.get("udid"):
+        patch["cas139_udid"] = res["udid"]
+    if "sms_code" in res:
+        patch["cas139_sms_code"] = res["sms_code"]
+    if patch:
+        cur = load_settings()
+        cur.update(patch)
+        store_settings(cur)
+
+
+def _m139_login(cfg, allow_fast):
+    """按 OpenList 驱动的顺序登录:先 Cookie 快速登录,再密码登录。"""
+    errs = []
+    if allow_fast and cfg["cookies"]:
+        try:
+            return ct.login_139_fast(cfg["user"] or cfg["phone"], cfg["cookies"])
+        except Exception as e:  # noqa: BLE001
+            errs.append("快速登录:%s" % e)
+    if cfg["user"] and cfg["pw"]:
+        try:
+            return ct.login_139_password(cfg["user"], cfg["pw"],
+                                         cfg["cookies"], cfg["sms"])
+        except ct.SmsVerificationNeeded as e:
+            if e.mail_cookies:
+                cur = load_settings()
+                cur["cas139_mail_cookies"] = e.mail_cookies
+                store_settings(cur)
+            raise
+        except Exception as e:  # noqa: BLE001
+            errs.append("密码登录:%s" % e)
+    raise RuntimeError("移动自动登录失败(%s)"
+                       % (";".join(errs) if errs
+                          else "未配置邮箱 Cookie / 用户名 / 密码"))
+
+
+def m139_ensure_auth(force=False):
+    """返回可用的 Authorization(不带 Basic 前缀)。
+    与 OpenList 驱动同逻辑:到期 15 天内先刷新,刷新失败回退密码登录;
+    无授权时先 Cookie 快速登录、再密码登录;新授权自动回存设置。"""
+    with _M139_LOCK:
+        cfg = _m139_cfg()
+        auth = cfg["auth"]
+        if auth:
+            exp = ct.auth_expiry_ms(auth)
+            if exp is None:
+                if not force:
+                    return auth
+            else:
+                remain = exp - int(time.time() * 1000)
+                if remain > 15 * 24 * 3600 * 1000 and not force:
+                    return auth
+                try:
+                    new = ct.refresh_139_auth(auth)
+                    _m139_persist({"auth": new})
+                    return new
+                except Exception:  # noqa: BLE001
+                    if remain > 0 and not force:
+                        try:
+                            res = _m139_login(cfg, allow_fast=False)
+                            _m139_persist(res)
+                            return res["auth"]
+                        except ct.SmsVerificationNeeded:
+                            raise
+                        except Exception:  # noqa: BLE001
+                            return auth  # 还没过期,先用旧的
+                    res = _m139_login(cfg, allow_fast=False)
+                    _m139_persist(res)
+                    return res["auth"]
+        res = _m139_login(cfg, allow_fast=True)
+        _m139_persist(res)
+        return res["auth"]
+
+
 def m139_basic():
-    phone, auth = m139_creds()
-    if not phone or not auth:
-        raise RuntimeError("未配置移动凭据(设置页填手机号 + AUTH)")
-    return ct.build_basic_auth(phone, auth)
+    cfg = _m139_cfg()
+    if not cfg["phone"] and not cfg["auth"] and not cfg["cookies"] \
+            and not cfg["user"]:
+        raise RuntimeError("未配置移动凭据(设置页填 AUTH,或配置密码登录回退三项)")
+    return ct.build_basic_auth(cfg["phone"], m139_ensure_auth())
 
 
 def m139_download_iter(file_id):
@@ -287,9 +379,10 @@ def restore_139(cas_bytes, parent="/"):
     sha = str(obj.get("sha256", "")).strip().lower()
     if not sha:
         return False, "这份 .cas 没有 sha256(是天翼版),不能还原到移动"
-    phone, auth = m139_creds()
-    if not phone or not auth:
-        return False, "未配置移动凭据(设置页填手机号 + AUTH,或 compose 里配 CAS139_PHONE / CAS139_AUTH)"
+    try:
+        basic = m139_basic()
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
     name = obj.get("name", "")
     size = int(obj.get("size", 0))
     import mimetypes
@@ -305,7 +398,6 @@ def restore_139(cas_bytes, parent="/"):
         "type": "file",
         "fileRenameMode": "auto_rename",
     }
-    basic = ct.build_basic_auth(phone, auth)
     st, txt = ct.personal_post(basic, ct.FILE_CREATE_URL, payload)
     if st != 200:
         return False, "file/create HTTP %s: %s" % (st, txt[:200])
@@ -381,7 +473,9 @@ def settings_path():
 
 
 SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
-                 "cas139_phone", "cas139_auth", "web_pw_hash")
+                 "cas139_phone", "cas139_auth", "web_pw_hash",
+                 "cas139_user", "cas139_pass", "cas139_mail_cookies",
+                 "cas139_sms_code", "cas139_udid")
 PATH_KEYS = ("tianyi_paths", "mobile_paths")
 
 
@@ -484,6 +578,16 @@ def update_settings(body):
     auth_in = str(body.get("cas139_auth") or "").strip()
     if auth_in:
         cur["cas139_auth"] = auth_in
+    if "cas139_user" in body:
+        cur["cas139_user"] = str(body.get("cas139_user") or "").strip()
+    for _k in ("cas139_pass", "cas139_mail_cookies", "cas139_sms_code"):
+        _v = str(body.get(_k) or "").strip()
+        if _v:
+            cur[_k] = _v
+    if body.get("clear_cas139_pass"):
+        cur["cas139_pass"] = ""
+    if body.get("clear_cas139_mail_cookies"):
+        cur["cas139_mail_cookies"] = ""
     if body.get("clear_openlist_token"):
         cur["openlist_token"] = ""
     if body.get("clear_cas139_auth"):
@@ -516,6 +620,14 @@ def update_settings(body):
     return public_settings(cur)
 
 
+def _auth_expiry_text(auth):
+    exp = ct.auth_expiry_ms(auth or "")
+    if not exp:
+        return ""
+    from datetime import datetime
+    return datetime.fromtimestamp(exp / 1000).strftime("%Y-%m-%d")
+
+
 def public_settings(s=None):
     """给页面看的设置:密钥只报已设置/未设置,绝不回显明文。"""
     s = s or load_settings()
@@ -532,6 +644,12 @@ def public_settings(s=None):
             "cas139_phone": s["cas139_phone"],
             "cas139_auth_set": bool(s["cas139_auth"]
                                     or ct.get_139_credentials()[1]),
+            "cas139_auth_expiry": _auth_expiry_text(
+                s["cas139_auth"] or ct.get_139_credentials()[1]),
+            "cas139_user": s["cas139_user"],
+            "cas139_pass_set": bool(s["cas139_pass"]),
+            "cas139_mail_cookies_set": bool(s["cas139_mail_cookies"]),
+            "cas139_sms_code_set": bool(s["cas139_sms_code"]),
             "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD)}
 
 
@@ -697,6 +815,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.ok({"found": found})
             if path == "/api/sidecar":
                 return self.api_sidecar(body)
+            if path == "/api/m139/relogin":
+                try:
+                    m139_ensure_auth(force=True)
+                    return self.ok({"msg": "移动授权已刷新/重新登录,新授权已保存"})
+                except Exception as e:  # noqa: BLE001
+                    return self.fail(str(e))
             if path == "/api/m139/list":
                 try:
                     items = ct.list_139_files(m139_basic(), body.get("parent") or "/")
@@ -753,7 +877,9 @@ class Handler(BaseHTTPRequestHandler):
         base, token = ol_cfg()
         status = {"version": VERSION, "openlist_configured": bool(base and token),
                   "openlist_ok": False, "openlist_msg": "",
-                  "m139_configured": bool(m139_creds()[0] and m139_creds()[1])}
+                  "m139_configured": bool(_m139_cfg()["auth"]
+                                          or _m139_cfg()["cookies"]
+                                          or _m139_cfg()["user"])}
         if base and token:
             try:
                 ol_list("/")
@@ -1002,6 +1128,19 @@ button:disabled{opacity:.35}
 <label class="mut">页面访问口令 <span id="pwstate" class="kv"></span></label>
 <input id="cfgpw" type="password" placeholder="留空 = 不修改">
 <label class="mut"><input type="checkbox" id="cfgauthclear" style="width:auto"> 清除页面里存的移动 AUTH</label>
+<label class="mut">—— 密码登录回退(与 OpenList 的 139 存储配置同名同格式,可直接复制过来)——</label>
+<label class="mut">139 用户名 Username(139 邮箱 / 手机号)</label>
+<input id="cfguser" placeholder="Username">
+<label class="mut">139 密码 Password <span id="passstate" class="kv"></span></label>
+<input id="cfgpass139" type="password" placeholder="留空 = 不修改">
+<label class="mut">邮箱 Cookie MailCookies(mail.10086.cn 的 Cookie 整串) <span id="cookstate" class="kv"></span></label>
+<textarea id="cfgcookies" rows="2" placeholder="形如 Os_SSo_Sid=...; RMKEY=...;留空 = 不修改"></textarea>
+<label class="mut">移动短信验证码 SmsCode <span id="smsstate" class="kv"></span></label>
+<input id="cfgsms" type="password" placeholder="平时留空;登录触发风控、收到验证码后填这里再点下方刷新">
+<div class="mut">填好上面三项后:AUTH 到期前会自动刷新,刷新失败会自动用邮箱 Cookie / 账号密码重新登录并回存新 AUTH,不用再去 F12 抓。触发短信风控时,验证码会发到手机,填到 SmsCode 再点刷新即可。</div>
+<div class="row"><button class="small green" onclick="relogin139()">🔄 立即刷新移动授权</button><span id="reloginmsg" class="mut"></span></div>
+<label class="mut"><input type="checkbox" id="cfgpassclear" style="width:auto"> 清除 139 密码</label>
+<label class="mut"><input type="checkbox" id="cfgcookclear" style="width:auto"> 清除邮箱 Cookie</label>
 <label class="mut"><input type="checkbox" id="cfgpwclear" style="width:auto"> 清除访问口令(打开页面不再要口令)</label>
 </div>
 <div class="card"><h2>主目录设置</h2>
@@ -1130,7 +1269,13 @@ let SETTINGS={tianyi_home:'',mobile_home:''};
 const MASK='••••••••';
 function secVal(id){ const v=$(id).value; return v===MASK? '' : v.trim(); }
 function secValRaw(id){ const v=$(id).value; return v===MASK? '' : v; }
-['cfgtoken','cfgauth','cfgpw'].forEach(function(id){ const el=$(id); if(el) el.addEventListener('focus', function(){ if(el.value===MASK) el.select(); }); });
+['cfgtoken','cfgauth','cfgpw','cfgpass139','cfgsms','cfgcookies'].forEach(function(id){ const el=$(id); if(el) el.addEventListener('focus', function(){ if(el.value===MASK) el.select(); }); });
+async function relogin139(){
+  $('reloginmsg').textContent='刷新/登录中...';
+  const d = await api('/api/m139/relogin',{});
+  $('reloginmsg').innerHTML = d.ok? '<span class=good>'+esc(d.data.msg)+'</span>' : '<span class=err>'+esc(d.msg)+'</span>';
+  loadSettings(); status();
+}
 async function loadSettings(){
   const d = await api('/api/settings');
   if(!d.ok) return;
@@ -1142,9 +1287,16 @@ async function loadSettings(){
   $('dirids139').value=SETTINGS.mobile_dir_ids_text||'';
   $('cfgtoken').value = SETTINGS.openlist_token_set? MASK : '';
   $('cfgauth').value = SETTINGS.cas139_auth_set? MASK : '';
+  $('cfguser').value=SETTINGS.cas139_user||'';
+  $('cfgpass139').value = SETTINGS.cas139_pass_set? MASK : '';
+  $('cfgcookies').value = SETTINGS.cas139_mail_cookies_set? MASK : '';
+  $('cfgsms').value = SETTINGS.cas139_sms_code_set? MASK : '';
+  $('passstate').textContent = SETTINGS.cas139_pass_set? '(已设置)' : '(未设置)';
+  $('cookstate').textContent = SETTINGS.cas139_mail_cookies_set? '(已设置)' : '(未设置)';
+  $('smsstate').textContent = SETTINGS.cas139_sms_code_set? '(已填,下次登录时用)' : '';
   $('cfgpw').value = SETTINGS.web_password_set? MASK : '';
   $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置'+(SETTINGS.openlist_token_source? ' · 来自'+SETTINGS.openlist_token_source : '')+')' : '(未设置)';
-  $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置)' : '(未设置)';
+  $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置'+(SETTINGS.cas139_auth_expiry? ' · 授权到期 '+SETTINGS.cas139_auth_expiry : '')+')' : '(未设置)';
   $('pwstate').textContent = SETTINGS.web_password_set? '(已设置)' : '(未设置)';
 }
 async function saveSettings(){
@@ -1155,10 +1307,13 @@ async function saveSettings(){
     openlist_url:$('cfgurl').value.trim(), openlist_token:secVal('cfgtoken'),
     cas139_phone:$('cfgphone').value.trim(), cas139_auth:secVal('cfgauth'),
     web_password:secValRaw('cfgpw'), clear_web_password:$('cfgpwclear').checked,
-    clear_openlist_token:$('cfgtokclear').checked, clear_cas139_auth:$('cfgauthclear').checked};
+    clear_openlist_token:$('cfgtokclear').checked, clear_cas139_auth:$('cfgauthclear').checked,
+    cas139_user:$('cfguser').value.trim(), cas139_pass:secVal('cfgpass139'),
+    cas139_mail_cookies:secVal('cfgcookies'), cas139_sms_code:secVal('cfgsms'),
+    clear_cas139_pass:$('cfgpassclear').checked, clear_cas139_mail_cookies:$('cfgcookclear').checked};
   const d = await api('/api/settings', body);
   $('setmsg').innerHTML = d.ok? '<span class=good>已保存</span>' : '<span class=err>'+esc(d.msg)+'</span>';
-  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; $('cfgtokclear').checked=false; $('cfgauthclear').checked=false; loadSettings(); status(); }
+  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; $('cfgtokclear').checked=false; $('cfgauthclear').checked=false; $('cfgpassclear').checked=false; $('cfgcookclear').checked=false; loadSettings(); status(); }
 }
 function fillHome(which){
   const v = which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home;

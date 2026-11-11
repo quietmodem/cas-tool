@@ -48,6 +48,7 @@ import math
 import mimetypes
 import os
 import random
+import re
 import string
 import sys
 import time
@@ -700,3 +701,601 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---------------------------------------------------------------------------
+# 139 密码登录回退 / 快速登录 / 授权刷新
+# 移植自 OpenList 139 驱动(drivers/139/util.go)的实现:
+#   step1 邮箱密码登录(mail.10086.cn/Login/Login.ashx,密码 sha1("fetion.com.cn:"+pw))
+#   step2 用 sid + RMKEY 换 artifact(smsrebuild1.mail.10086.cn/setting/s)
+#   step3 thirdlogin(user-njs.yun.139.com)双层 AES 加密换 authToken
+# 授权过期前 15 天内走 authTokenRefresh.do 刷新;刷新失败回退密码登录。
+# AES 为纯 Python 实现(登录载荷很小,性能无关),已用 NIST 向量在测试里校验。
+# ---------------------------------------------------------------------------
+
+MAIL_LOGIN_URL = "https://mail.10086.cn/Login/Login.ashx"
+MAIL_SMS_URL = "https://mail.10086.cn/s"
+ARTIFACT_URL = "https://smsrebuild1.mail.10086.cn/setting/s"
+THIRDLOGIN_URL = "https://user-njs.yun.139.com/user/thirdlogin"
+REFRESH_URL = "https://aas.caiyun.feixin.10086.cn:443/tellin/authTokenRefresh.do"
+_KEY1 = bytes.fromhex("73634235495062495331515373756c734e7253306c673d3d")  # 24B
+_KEY2 = bytes.fromhex("7150714477323633586746674c337538")                  # 16B
+MAIL_PUBKEY_B64 = (
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnsOHTFtwW5rq/8gGhPlM5Z3RP"
+    "deN/d+FYIHb5JmcfBOCozXuT8c+0anvxtkjzghixwNlnmBuhN8OYfS789YuH/qReQbHC"
+    "7OdlisLildNWPHRNUYcPa0W3lXSG3+81CXK7FDXPvXo5ubw2GqVbIsccMarI1dyfXdi"
+    "4ITiCXvmM9wYBdUs9yXtoorhlpyYUI2GV8HNsQjWK9P5QZHT3ox5Qy+mjRmvv6RUFJLP"
+    "OMkOS/pGZ0DwC1ypFZBxstW0/ftVupdOmGWvW7J2/e3dq3A/UvIkC4YUY/diL1wighJx"
+    "1G9MiRROISjNMvNyUDSTqPJy516+l3sgHEbc067QIJx2NQIDAQAB")
+
+
+# ---- 纯 Python AES(S-box 由 GF(2^8) 求逆+仿射变换生成) ----
+def _gf_mul(a, b):
+    p = 0
+    for _ in range(8):
+        if b & 1:
+            p ^= a
+        hi = a & 0x80
+        a = (a << 1) & 0xFF
+        if hi:
+            a ^= 0x1B
+        b >>= 1
+    return p
+
+
+def _gf_inv(a):
+    if a == 0:
+        return 0
+    r, base, e = 1, a, 254
+    while e:
+        if e & 1:
+            r = _gf_mul(r, base)
+        base = _gf_mul(base, base)
+        e >>= 1
+    return r
+
+
+def _rotl8(x, n):
+    return ((x << n) | (x >> (8 - n))) & 0xFF
+
+
+_SBOX = []
+for _i in range(256):
+    _inv = _gf_inv(_i)
+    _SBOX.append(_inv ^ _rotl8(_inv, 1) ^ _rotl8(_inv, 2) ^ _rotl8(_inv, 3)
+                 ^ _rotl8(_inv, 4) ^ 0x63)
+_INV_SBOX = [0] * 256
+for _i, _v in enumerate(_SBOX):
+    _INV_SBOX[_v] = _i
+_RCON = [0x01]
+for _i in range(13):
+    _RCON.append(_gf_mul(_RCON[-1], 2))
+
+
+def _aes_expand(key):
+    nk = len(key) // 4
+    nr = nk + 6
+    w = [list(key[4 * i:4 * i + 4]) for i in range(nk)]
+    for i in range(nk, 4 * (nr + 1)):
+        t = list(w[i - 1])
+        if i % nk == 0:
+            t = [_SBOX[t[1]] ^ _RCON[i // nk - 1], _SBOX[t[2]],
+                 _SBOX[t[3]], _SBOX[t[0]]]
+        elif nk > 6 and i % nk == 4:
+            t = [_SBOX[x] for x in t]
+        w.append([w[i - nk][j] ^ t[j] for j in range(4)])
+    return w, nr
+
+
+def _aes_block(block, w, nr, decrypt=False):
+    s = [[block[r + 4 * c] for c in range(4)] for r in range(4)]
+
+    def add_rk(rnd):
+        for c in range(4):
+            for r in range(4):
+                s[r][c] ^= w[rnd * 4 + c][r]
+
+    def sub(inv=False):
+        box = _INV_SBOX if inv else _SBOX
+        for r in range(4):
+            for c in range(4):
+                s[r][c] = box[s[r][c]]
+
+    def shift(inv=False):
+        for r in range(1, 4):
+            row = [s[r][c] for c in range(4)]
+            for c in range(4):
+                s[r][c] = row[(c - r) % 4] if inv else row[(c + r) % 4]
+
+    def mixcol():
+        for c in range(4):
+            a = [s[r][c] for r in range(4)]
+            s[0][c] = _gf_mul(a[0], 2) ^ _gf_mul(a[1], 3) ^ a[2] ^ a[3]
+            s[1][c] = a[0] ^ _gf_mul(a[1], 2) ^ _gf_mul(a[2], 3) ^ a[3]
+            s[2][c] = a[0] ^ a[1] ^ _gf_mul(a[2], 2) ^ _gf_mul(a[3], 3)
+            s[3][c] = _gf_mul(a[0], 3) ^ a[1] ^ a[2] ^ _gf_mul(a[3], 2)
+
+    def inv_mixcol():
+        for c in range(4):
+            a = [s[r][c] for r in range(4)]
+            s[0][c] = (_gf_mul(a[0], 14) ^ _gf_mul(a[1], 11)
+                       ^ _gf_mul(a[2], 13) ^ _gf_mul(a[3], 9))
+            s[1][c] = (_gf_mul(a[0], 9) ^ _gf_mul(a[1], 14)
+                       ^ _gf_mul(a[2], 11) ^ _gf_mul(a[3], 13))
+            s[2][c] = (_gf_mul(a[0], 13) ^ _gf_mul(a[1], 9)
+                       ^ _gf_mul(a[2], 14) ^ _gf_mul(a[3], 11))
+            s[3][c] = (_gf_mul(a[0], 11) ^ _gf_mul(a[1], 13)
+                       ^ _gf_mul(a[2], 9) ^ _gf_mul(a[3], 14))
+
+    if not decrypt:
+        add_rk(0)
+        for rnd in range(1, nr):
+            sub(); shift(); mixcol(); add_rk(rnd)
+        sub(); shift(); add_rk(nr)
+    else:
+        add_rk(nr)
+        for rnd in range(nr - 1, 0, -1):
+            sub(inv=True); shift(inv=True); add_rk(rnd); inv_mixcol()
+        sub(inv=True); shift(inv=True); add_rk(0)
+    return bytes(s[r][c] for c in range(4) for r in range(4))
+
+
+def pkcs7_pad(data, bs=16):
+    n = bs - (len(data) % bs)
+    return data + bytes([n]) * n
+
+
+def pkcs7_unpad(data):
+    if not data:
+        raise ValueError("pkcs7: empty")
+    n = data[-1]
+    if n < 1 or n > 16 or n > len(data):
+        raise ValueError("pkcs7: bad padding")
+    return data[:-n]
+
+
+def aes_ecb_encrypt(data, key):
+    w, nr = _aes_expand(key)
+    return b"".join(_aes_block(data[i:i + 16], w, nr)
+                    for i in range(0, len(data), 16))
+
+
+def aes_ecb_decrypt(data, key):
+    w, nr = _aes_expand(key)
+    return b"".join(_aes_block(data[i:i + 16], w, nr, decrypt=True)
+                    for i in range(0, len(data), 16))
+
+
+def aes_cbc_encrypt(data, key, iv):
+    w, nr = _aes_expand(key)
+    out, prev = [], iv
+    padded = pkcs7_pad(data)
+    for i in range(0, len(padded), 16):
+        blk = bytes(x ^ y for x, y in zip(padded[i:i + 16], prev))
+        prev = _aes_block(blk, w, nr)
+        out.append(prev)
+    return b"".join(out)
+
+
+def aes_cbc_decrypt(data, key, iv):
+    w, nr = _aes_expand(key)
+    out, prev = [], iv
+    for i in range(0, len(data), 16):
+        blk = data[i:i + 16]
+        out.append(bytes(x ^ y for x, y in zip(_aes_block(blk, w, nr, True), prev)))
+        prev = blk
+    return pkcs7_unpad(b"".join(out))
+
+
+# ---- RSA PKCS#1 v1.5(仅 SMS 流程给登录名加密用) ----
+def _der_len(data, i):
+    b = data[i]
+    if b < 0x80:
+        return b, i + 1
+    n = b & 0x7F
+    return int.from_bytes(data[i + 1:i + 1 + n], "big"), i + 1 + n
+
+
+def _der_tlv(data, i):
+    tag = data[i]
+    ln, j = _der_len(data, i + 1)
+    return tag, data[j:j + ln], j + ln
+
+
+def _rsa_pub_numbers(spki_b64):
+    der = base64.b64decode(spki_b64)
+    _, spki, _ = _der_tlv(der, 0)
+    i = 0
+    _, _, i = _der_tlv(spki, i)            # algorithm seq
+    _, bitstr, _ = _der_tlv(spki, i)       # subjectPublicKey BIT STRING
+    _, rsaseq, _ = _der_tlv(bitstr[1:], 0)
+    j = 0
+    _, n_bytes, j = _der_tlv(rsaseq, j)
+    _, e_bytes, _ = _der_tlv(rsaseq, j)
+    return (int.from_bytes(n_bytes, "big"), int.from_bytes(e_bytes, "big"))
+
+
+def rsa_encrypt_pkcs1v15(spki_b64, msg):
+    n, e = _rsa_pub_numbers(spki_b64)
+    k = (n.bit_length() + 7) // 8
+    ps_len = k - len(msg) - 3
+    if ps_len < 8:
+        raise ValueError("message too long for RSA key")
+    ps = bytearray()
+    while len(ps) < ps_len:
+        ps.extend(b for b in os.urandom(ps_len) if b != 0)
+    em = b"\x00\x02" + bytes(ps[:ps_len]) + b"\x00" + msg
+    c = pow(int.from_bytes(em, "big"), e, n)
+    return base64.b64encode(c.to_bytes(k, "big")).decode()
+
+
+# ---- Cookie 工具 ----
+def parse_cookie_header(s):
+    out = []
+    for part in (s or "").split(";"):
+        part = part.strip()
+        if "=" in part:
+            name, value = part.split("=", 1)
+            if name.strip():
+                out.append((name.strip(), value.strip()))
+    return out
+
+
+def cookie_value(cookies, name):
+    for k, v in parse_cookie_header(cookies):
+        if k == name:
+            return v
+    return ""
+
+
+def merge_cookie_header(old, set_cookies):
+    pairs = parse_cookie_header(old)
+    idx = {k: i for i, (k, _) in enumerate(pairs)}
+    for sc in set_cookies or []:
+        first = sc.split(";", 1)[0].strip()
+        if "=" not in first:
+            continue
+        name, value = first.split("=", 1)
+        name = name.strip()
+        if name in idx:
+            pairs[idx[name]] = (name, value.strip())
+        else:
+            idx[name] = len(pairs)
+            pairs.append((name, value.strip()))
+    return "; ".join("%s=%s" % kv for kv in pairs)
+
+
+# ---- HTTP 小助手 ----
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _http_raw(method, url, body=None, headers=None, no_redirect=False, timeout=30):
+    req = urllib.request.Request(url, data=body, headers=headers or {},
+                                 method=method)
+    opener = (urllib.request.build_opener(_NoRedirect) if no_redirect
+              else urllib.request.build_opener())
+    try:
+        resp = opener.open(req, timeout=timeout)
+        return resp.status, resp.headers, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
+def _now_ms():
+    return int(time.time() * 1000)
+
+
+def _sha1_hex(s):
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
+
+
+class SmsVerificationNeeded(Exception):
+    """登录触发短信风控且验证码已发送;mail_cookies 是合并后的最新 Cookie。"""
+
+    def __init__(self, msg, mail_cookies=""):
+        super().__init__(msg)
+        self.mail_cookies = mail_cookies
+
+
+_SMS_SCENES = {"PML401010062": 2, "MW0016": 4, "S025": 1, "S035": 1}
+
+
+def _mail_xml_parse(body_bytes):
+    txt = body_bytes.decode("utf-8", "replace")
+    out = {}
+    m = re.search(r"<code>([^<]*)</code>", txt)
+    out["code"] = m.group(1).strip() if m else ""
+    m = re.search(r"<summary>([^<]*)</summary>", txt)
+    out["summary"] = m.group(1).strip() if m else ""
+    m = (re.search(r'name="loginSuccessUrl"[^>]*>([^<]*)<', txt)
+         or re.search(r"<loginSuccessUrl>([^<]*)</loginSuccessUrl>", txt))
+    out["loginSuccessUrl"] = m.group(1).strip() if m else ""
+    return out
+
+
+def _mail_xml_field(name, value):
+    esc = (value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    return '<string name="%s">%s</string>' % (name, esc)
+
+
+def _mail_xml_headers(cookies):
+    return {"Cookie": cookies, "Content-Type": "application/xml; charset=utf-8",
+            "User-Agent": "okhttp/4.12.0"}
+
+
+def _send_sms_code(state, risk_code):
+    scene = _SMS_SCENES[risk_code]
+    login_name = rsa_encrypt_pkcs1v15(MAIL_PUBKEY_B64,
+                                      state["user"].encode("utf-8"))
+    body = ("<object>" + "".join([
+        _mail_xml_field("loginName", login_name),
+        _mail_xml_field("fv", "4"),
+        _mail_xml_field("clientId", "1003"),
+        _mail_xml_field("eMode", "1"),
+        _mail_xml_field("loginFailureUrl", ""),
+        _mail_xml_field("loginSuccessUrl", ""),
+        _mail_xml_field("verifyCode", ""),
+        _mail_xml_field("version", "1.0"),
+        _mail_xml_field("scene", str(scene)),
+    ]) + "</object>").encode("utf-8")
+    url = (MAIL_SMS_URL + "?func=" + urllib.parse.quote("login:sendSmsCodeByScene")
+           + "&cguid=" + str(_now_ms()))
+    st, headers, raw = _http_raw("POST", url, body,
+                                 _mail_xml_headers(state["cookies"]))
+    state["cookies"] = merge_cookie_header(
+        state["cookies"], headers.get_all("Set-Cookie") or [])
+    resp = _mail_xml_parse(raw)
+    if resp["code"] == "S_OK":
+        return
+    if resp["code"] in ("PML401010021", "PML401010022"):
+        raise RuntimeError("139 邮箱要求先过图形验证码才能发短信:%s" % resp["code"])
+    if resp["code"] == "PML404010001":
+        raise RuntimeError("139 短信验证码请求太频繁,请稍后再试")
+    raise RuntimeError("发送 139 短信验证码失败:code=%s %s"
+                       % (resp["code"], resp["summary"]))
+
+
+def _verify_sms_code(state, risk_code):
+    login_name = rsa_encrypt_pkcs1v15(MAIL_PUBKEY_B64,
+                                      state["user"].encode("utf-8"))
+    fields = [
+        _mail_xml_field("clientId", "1003"),
+        _mail_xml_field("version", "4"),
+        _mail_xml_field("loginType", "0"),
+        _mail_xml_field("authType", "2"),
+        _mail_xml_field("loginName", login_name),
+        _mail_xml_field("eMode", "1"),
+        _mail_xml_field("loginPassword", _sha1_hex("fetion.com.cn:" + state["sms"])),
+        _mail_xml_field("createAutoLoginSecretKey", "1"),
+        _mail_xml_field("verifyCode", ""),
+        _mail_xml_field("verifyAgentId", ""),
+        _mail_xml_field("reqFrom", "3"),
+        _mail_xml_field("needWCookie", "1"),
+    ]
+    if risk_code == "MW0016":
+        fields.append(_mail_xml_field("pwdType", "1"))
+    body = ("<object>" + "".join(fields) + "</object>").encode("utf-8")
+    url = (MAIL_SMS_URL + "?func=" + urllib.parse.quote("/login/inlogin.action")
+           + "&cguid=" + str(_now_ms()))
+    st, headers, raw = _http_raw("POST", url, body,
+                                 _mail_xml_headers(state["cookies"]))
+    state["cookies"] = merge_cookie_header(
+        state["cookies"], headers.get_all("Set-Cookie") or [])
+    resp = _mail_xml_parse(raw)
+    if resp["code"] != "S_OK":
+        raise RuntimeError("139 短信验证码校验失败:code=%s %s"
+                           % (resp["code"], resp["summary"]))
+    sid = ""
+    if resp["loginSuccessUrl"]:
+        q = urllib.parse.parse_qs(
+            urllib.parse.urlparse(resp["loginSuccessUrl"]).query)
+        sid = (q.get("sid") or [""])[0]
+    if not sid:
+        sid = (cookie_value(state["cookies"], "Os_SSo_Sid")
+               or cookie_value(state["cookies"], "sid"))
+    if not sid:
+        raise RuntimeError("短信校验成功但未返回 sid")
+    state["sms"] = ""
+    return sid
+
+
+def _step1_password_login(state):
+    hashed = _sha1_hex("fetion.com.cn:" + state["password"])
+    cguid = str(_now_ms())
+    referer = ("https://mail.10086.cn/default.html?&s=1&v=0&u=%s&m=1&ec=S001"
+               "&resource=indexLogin&clientid=1003&auto=on&cguid=%s&mtime=45"
+               % (base64.b64encode(state["user"].encode()).decode(), cguid))
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://mail.10086.cn",
+        "Referer": referer,
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0"),
+        "Cookie": state["cookies"],
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+    form = urllib.parse.urlencode({
+        "UserName": state["user"], "passOld": "", "auto": "on",
+        "Password": hashed, "webIndexPagePwdLogin": "1", "pwdType": "1",
+        "clientId": "1003", "authType": "2"}).encode("utf-8")
+    st, resp_headers, raw = _http_raw("POST", MAIL_LOGIN_URL, form, headers,
+                                      no_redirect=True)
+    set_cookies = resp_headers.get_all("Set-Cookie") or []
+    state["cookies"] = merge_cookie_header(state["cookies"], set_cookies)
+    location = resp_headers.get("Location") or ""
+    sid = ""
+    if location:
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        risk = (q.get("ec") or [""])[0]
+        if risk:
+            if risk not in _SMS_SCENES:
+                raise RuntimeError("139 邮箱风控拦截(ec=%s),暂不支持该验证方式" % risk)
+            if not state["sms"]:
+                _send_sms_code(state, risk)
+                raise SmsVerificationNeeded(
+                    "139 登录触发短信验证,验证码已发送;请把收到的验证码填入"
+                    "设置页『移动短信验证码』,再点『立即刷新移动授权』",
+                    mail_cookies=state["cookies"])
+            return _verify_sms_code(state, risk)
+        sid = (q.get("sid") or [""])[0]
+    if not sid:
+        for sc in set_cookies:
+            first = sc.split(";", 1)[0]
+            if "=" in first:
+                name, value = first.split("=", 1)
+                if name.strip() in ("Os_SSo_Sid", "sid"):
+                    sid = value.strip()
+                    break
+    if not sid:
+        raise RuntimeError("步骤1 邮箱登录未取到 sid(账号/密码可能不对,或登录被拒)")
+    return sid
+
+
+def _step2_artifact(state, sid):
+    rmkey = ""
+    for part in state["cookies"].split(";"):
+        part = part.strip()
+        if part.startswith("RMKEY="):
+            rmkey = part
+            break
+    if not rmkey:
+        raise RuntimeError("邮箱 Cookie 里缺少 RMKEY,无法换取 artifact")
+    url = (ARTIFACT_URL + "?func=" + urllib.parse.quote("umc:getArtifact")
+           + "&sid=" + urllib.parse.quote(sid) + "&cguid=" + str(_now_ms()))
+    headers = {"Cookie": rmkey, "Content-Type": "text/xml; charset=utf-8",
+               "User-Agent": "okhttp/4.12.0"}
+    st, resp_headers, raw = _http_raw("POST", url, b"", headers)
+    try:
+        dycpwd = json.loads(raw.decode("utf-8", "replace"))["var"]["artifact"]
+    except Exception:  # noqa: BLE001
+        dycpwd = ""
+    if not dycpwd:
+        raise RuntimeError("步骤2 未换到 artifact(响应:%s)" % raw[:120])
+    return dycpwd
+
+
+def _sorted_json(obj):
+    if isinstance(obj, dict):
+        return "{" + ",".join(
+            json.dumps(k, ensure_ascii=False) + ":" + _sorted_json(obj[k])
+            for k in sorted(obj)) + "}"
+    if isinstance(obj, list):
+        return "[" + ",".join(_sorted_json(x) for x in obj) + "]"
+    return json.dumps(obj, ensure_ascii=False)
+
+
+def _step3_thirdlogin(state, dycpwd):
+    plain = {
+        "clientkey_decrypt": "l3TryM&Q+X7@dzwk)qP",
+        "clienttype": "886",
+        "cpid": "507",
+        "dycpwd": dycpwd,
+        "extInfo": {"ifOpenAccount": "0"},
+        "loginMode": "0",
+        "msisdn": state["user"],
+        "pintype": "13",
+        "secinfo": _sha1_hex("fetion.com.cn:" + dycpwd).upper(),
+        "version": "20250901",
+    }
+    iv = os.urandom(16)
+    payload = base64.b64encode(
+        iv + aes_cbc_encrypt(_sorted_json(plain).encode("utf-8"), _KEY1, iv))
+    headers = {
+        "hcy-cool-flag": "1",
+        "x-huawei-channelSrc": "10246600",
+        "x-MM-Source": "0",
+        "x-UserAgent": "android|23116PN5BC|android15|1.2.6|||1440x3200|10246600",
+        "x-DeviceInfo": ("4|127.0.0.1|5|1.2.6|Xiaomi|23116PN5BC||"
+                         "02-00-00-00-00-00|android 15|1440x3200|android|||"),
+        "Content-Type": "text/plain;charset=UTF-8",
+        "User-Agent": "okhttp/3.12.2",
+    }
+    st, resp_headers, raw = _http_raw("POST", THIRDLOGIN_URL, payload, headers)
+    raw = raw.strip()
+    if raw.startswith(b"{"):
+        layer1 = raw
+    else:
+        decoded = base64.b64decode(raw)
+        layer1 = aes_cbc_decrypt(decoded[16:], _KEY1, decoded[:16])
+    try:
+        hex_inner = json.loads(layer1.decode("utf-8", "replace"))["data"]
+    except Exception:  # noqa: BLE001
+        raise RuntimeError("步骤3 第一层响应异常:%s" % layer1[:120])
+    final = json.loads(pkcs7_unpad(aes_ecb_decrypt(
+        bytes.fromhex(hex_inner), _KEY2)).decode("utf-8", "replace"))
+    token = final.get("authToken") or ""
+    account = final.get("account") or ""
+    udid = final.get("userDomainId") or ""
+    if not token or not account:
+        raise RuntimeError("步骤3 未取到 authToken:%s" % str(final)[:160])
+    auth = base64.b64encode(
+        ("pc:%s:%s" % (account, token)).encode("utf-8")).decode()
+    return auth, udid
+
+
+def login_139_password(user, password, mail_cookies, sms_code=""):
+    """完整密码登录(步骤1→2→3),返回 {auth, mail_cookies, udid, sms_code}。"""
+    if not user or not password:
+        raise RuntimeError("未配置移动用户名/密码")
+    state = {"user": user, "password": password,
+             "cookies": mail_cookies or "", "sms": sms_code or ""}
+    sid = _step1_password_login(state)
+    dycpwd = _step2_artifact(state, sid)
+    auth, udid = _step3_thirdlogin(state, dycpwd)
+    return {"auth": auth, "mail_cookies": state["cookies"],
+            "udid": udid, "sms_code": state["sms"]}
+
+
+def login_139_fast(user, mail_cookies):
+    """邮箱 Cookie 快速登录(跳过步骤1,用现成 Os_SSo_Sid 走步骤2→3)。"""
+    sid = cookie_value(mail_cookies or "", "Os_SSo_Sid")
+    if not sid or not cookie_value(mail_cookies or "", "RMKEY"):
+        raise RuntimeError("邮箱 Cookie 缺少 Os_SSo_Sid 或 RMKEY,无法快速登录")
+    state = {"user": user or "", "password": "",
+             "cookies": mail_cookies or "", "sms": ""}
+    dycpwd = _step2_artifact(state, sid)
+    auth, udid = _step3_thirdlogin(state, dycpwd)
+    return {"auth": auth, "mail_cookies": state["cookies"],
+            "udid": udid, "sms_code": ""}
+
+
+def auth_expiry_ms(auth_b64):
+    """解析 Authorization 里令牌的到期毫秒时间戳;解析不了返回 None。"""
+    try:
+        decoded = base64.b64decode(auth_b64).decode("utf-8", "replace")
+        parts = decoded.split(":")
+        if len(parts) < 3:
+            return None
+        segs = parts[2].split("|")
+        if len(segs) < 4:
+            return None
+        return int(segs[3])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def refresh_139_auth(auth_b64):
+    """调 authTokenRefresh.do 刷新令牌,返回新的 Authorization(失败抛错)。"""
+    try:
+        decoded = base64.b64decode(auth_b64).decode("utf-8", "replace")
+        parts = decoded.split(":")
+        token, account = parts[2], parts[1]
+    except Exception:  # noqa: BLE001
+        raise RuntimeError("Authorization 格式不对,无法刷新")
+    body = ("<root><token>%s</token><account>%s</account>"
+            "<clienttype>656</clienttype></root>" % (token, account)).encode()
+    st, headers, raw = _http_raw(
+        "POST", REFRESH_URL, body, {"Content-Type": "application/xml"})
+    txt = raw.decode("utf-8", "replace")
+    m_ret = re.search(r"<return>([^<]*)</return>", txt)
+    m_tok = re.search(r"<token>([^<]*)</token>", txt)
+    if not m_ret or m_ret.group(1).strip() != "0" or not m_tok:
+        m_desc = re.search(r"<desc>([^<]*)</desc>", txt)
+        raise RuntimeError("令牌刷新失败:%s"
+                           % (m_desc.group(1) if m_desc else txt[:120]))
+    return base64.b64encode(
+        ("%s:%s:%s" % (parts[0], account, m_tok.group(1).strip())
+         ).encode("utf-8")).decode()

@@ -148,7 +148,17 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v2.0.0(2026-11-11)。Web v2.0.0:双云直连阶段一——
+版本: CLI v1.0.0 / Web v2.1.0(2026-11-11)。Web v2.1.0:移动「密码登录
+回退」,移植 OpenList 139 驱动的鉴权机制——设置页新增与 OpenList 同名
+同格式的三项(Username / Password / MailCookies,外加 SmsCode),可把
+OpenList 里 139 存储的配置原样复制过来。授权到期 15 天内自动调
+authTokenRefresh 刷新,刷新失败回退登录(先邮箱 Cookie 快速登录、再
+账号密码三步登录:mail.10086.cn 密码登录 → artifact → thirdlogin 双层
+AES),新授权与合并后的邮箱 Cookie 自动回存设置;设置页可看授权到期日,
+并有「立即刷新移动授权」按钮。登录触发短信风控时验证码发到手机,填
+SmsCode 再点刷新即可。AES 为内置纯 Python 实现(NIST 向量校验),镜像
+无新依赖。天翼直连顺延后续版本。
+Web v2.0.0:双云直连阶段一——
 移动云盘全直连(不再经 OpenList):生成页可切换「OpenList 网盘 / 移动云盘
 (直连)」,直连模式经 139 的 file/list 浏览(条目自带 fileId)、
 file/getDownloadUrl 取直链流式生成 cas;还原页新增「从移动云盘选目录

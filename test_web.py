@@ -12,6 +12,8 @@ import threading
 import time
 import urllib.request
 import urllib.error
+
+import cas_tool as ct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -117,6 +119,18 @@ class MockOL(BaseHTTPRequestHandler):
 
 
 M139_FILE = "139测试.mkv"
+M139_LOGIN = {"step1": 0, "step2": 0, "step3": 0, "refresh": 0,
+              "refresh_ok": True, "step1_pw_ok": False, "step3_plain": {}}
+
+
+def _m139_token(days=30):
+    exp = int(time.time() * 1000) + days * 24 * 3600 * 1000
+    return "p1|p2|p3|%d" % exp
+
+
+def _m139_auth(days=30):
+    return base64.b64encode(
+        ("pc:13800138000:%s" % _m139_token(days)).encode()).decode()
 
 
 class Mock139(BaseHTTPRequestHandler):
@@ -136,6 +150,61 @@ class Mock139(BaseHTTPRequestHandler):
     def do_POST(self):
         ln = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(ln)
+        upath = urllib.parse.urlparse(self.path).path
+        if upath == "/Login/Login.ashx":
+            M139_LOGIN["step1"] += 1
+            form = urllib.parse.parse_qs(raw.decode("utf-8", "replace"))
+            exp_pw = hashlib.sha1("fetion.com.cn:pw139".encode()).hexdigest()
+            M139_LOGIN["step1_pw_ok"] = form.get("Password") == [exp_pw] \
+                and form.get("UserName") == ["139user@test"]
+            body = b""
+            self.send_response(302)
+            self.send_header("Location",
+                             "https://mail.10086.cn/default.html?sid=SID-1")
+            self.send_header("Set-Cookie", "Os_SSo_Sid=SID-1; Path=/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if upath == "/setting/s":
+            M139_LOGIN["step2"] += 1
+            data = json.dumps({"var": {"artifact": "DYCPWD-TEST"}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if upath == "/user/thirdlogin":
+            M139_LOGIN["step3"] += 1
+            dec = base64.b64decode(raw)
+            plain = ct.aes_cbc_decrypt(dec[16:], ct._KEY1, dec[:16])
+            M139_LOGIN["step3_plain"] = json.loads(plain)
+            final = {"authToken": _m139_token(30), "account": "13800138000",
+                     "userDomainId": "UD-9"}
+            layer2 = ct.aes_ecb_encrypt(
+                ct.pkcs7_pad(json.dumps(final).encode()), ct._KEY2).hex()
+            layer1 = json.dumps({"data": layer2}).encode()
+            iv = os.urandom(16)
+            data = base64.b64encode(iv + ct.aes_cbc_encrypt(layer1, ct._KEY1, iv))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if upath == "/tellin/authTokenRefresh.do":
+            M139_LOGIN["refresh"] += 1
+            if M139_LOGIN["refresh_ok"]:
+                xml = ("<root><return>0</return><desc>ok</desc>"
+                       "<token>%s</token></root>" % _m139_token(30)).encode()
+            else:
+                xml = b"<root><return>100</return><desc>token invalid</desc></root>"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(xml)))
+            self.end_headers()
+            self.wfile.write(xml)
+            return
         if self.path == "/hcy/file/list":
             body = json.loads(raw)
             parent = body.get("parentFileId") or "/"
@@ -228,6 +297,12 @@ def main():
     ct.FILE_CREATE_URL = "http://127.0.0.1:%d/hcy/file/create" % mock_139.server_address[1]
     ct.FILE_LIST_URL = "http://127.0.0.1:%d/hcy/file/list" % mock_139.server_address[1]
     ct.FILE_DOWNLOAD_URL = "http://127.0.0.1:%d/hcy/file/getDownloadUrl" % mock_139.server_address[1]
+    _p139 = mock_139.server_address[1]
+    ct.MAIL_LOGIN_URL = "http://127.0.0.1:%d/Login/Login.ashx" % _p139
+    ct.MAIL_SMS_URL = "http://127.0.0.1:%d/s" % _p139
+    ct.ARTIFACT_URL = "http://127.0.0.1:%d/setting/s" % _p139
+    ct.THIRDLOGIN_URL = "http://127.0.0.1:%d/user/thirdlogin" % _p139
+    ct.REFRESH_URL = "http://127.0.0.1:%d/tellin/authTokenRefresh.do" % _p139
 
     web = ThreadingHTTPServer(("127.0.0.1", 0), cas_web.Handler)
     threading.Thread(target=web.serve_forever, daemon=True).start()
@@ -372,6 +447,62 @@ def main():
     check("139 直连生成哈希正确",
           obj["md5"] == exp_md5 and obj["sha256"] == exp_sha and obj["sliceMd5"] == exp_slice,
           obj)
+
+    # t) 移动密码登录回退(移植 OpenList 139 驱动的机制)
+    check("AES NIST 向量(ECB-128)",
+          ct.aes_ecb_encrypt(bytes.fromhex("6bc1bee22e409f96e93d7e117393172a"),
+                             bytes.fromhex("2b7e151628aed2a6abf7158809cf4f3c")
+                             ).hex() == "3ad77bb40d7a3660a89ecaf32466ef97")
+    st, d, _ = req("POST", base + "/api/settings", {
+        "cas139_user": "139user@test", "cas139_pass": "pw139",
+        "cas139_mail_cookies": "Os_SSo_Sid=SID-OLD; RMKEY=RK-1; other=x",
+        "cas139_auth": _m139_auth(30)})
+    check("回退三项已保存且回显到期日",
+          d["ok"] and d["data"]["cas139_pass_set"]
+          and d["data"]["cas139_mail_cookies_set"]
+          and bool(d["data"]["cas139_auth_expiry"]), d)
+    st, d, _ = req("POST", base + "/api/m139/list", {"parent": "/"})
+    check("健康授权不触发登录/刷新",
+          d["ok"] and M139_LOGIN["step1"] == 0 and M139_LOGIN["step3"] == 0
+          and M139_LOGIN["refresh"] == 0, M139_LOGIN)
+    st, d, _ = req("POST", base + "/api/settings", {"cas139_auth": _m139_auth(1)})
+    st, d, _ = req("POST", base + "/api/m139/list", {"parent": "/"})
+    check("临期授权自动刷新",
+          d["ok"] and M139_LOGIN["refresh"] == 1 and M139_LOGIN["step1"] == 0,
+          M139_LOGIN)
+    M139_LOGIN["refresh_ok"] = False
+    st, d, _ = req("POST", base + "/api/settings", {"cas139_auth": _m139_auth(-1)})
+    st, d, _ = req("POST", base + "/api/m139/list", {"parent": "/"})
+    check("过期+刷新失败回退密码登录",
+          d["ok"] and M139_LOGIN["step1"] == 1 and M139_LOGIN["step2"] == 1
+          and M139_LOGIN["step3"] == 1, M139_LOGIN)
+    check("step1 密码哈希与账号正确", M139_LOGIN["step1_pw_ok"])
+    p3 = M139_LOGIN["step3_plain"]
+    check("step3 载荷正确",
+          p3.get("msisdn") == "139user@test" and p3.get("dycpwd") == "DYCPWD-TEST"
+          and p3.get("secinfo") == hashlib.sha1(
+              "fetion.com.cn:DYCPWD-TEST".encode()).hexdigest().upper(), p3)
+    saved = cas_web.load_settings()
+    check("新授权与合并 Cookie 已回存",
+          base64.b64decode(saved["cas139_auth"]).decode().startswith(
+              "pc:13800138000:p1|")
+          and "Os_SSo_Sid=SID-1" in saved["cas139_mail_cookies"],
+          saved["cas139_auth"][:24])
+    env_auth = os.environ.pop("CAS139_AUTH", None)
+    try:
+        st, d, _ = req("POST", base + "/api/settings",
+                       {"clear_cas139_auth": True, "clear_cas139_pass": True})
+        s1_before, s3_before = M139_LOGIN["step1"], M139_LOGIN["step3"]
+        st, d, _ = req("POST", base + "/api/m139/list", {"parent": "/"})
+        check("无授权走 Cookie 快速登录",
+              d["ok"] and M139_LOGIN["step1"] == s1_before
+              and M139_LOGIN["step3"] == s3_before + 1, M139_LOGIN)
+    finally:
+        if env_auth is not None:
+            os.environ["CAS139_AUTH"] = env_auth
+    M139_LOGIN["refresh_ok"] = True
+    st, d, _ = req("POST", base + "/api/m139/relogin", {})
+    check("手动刷新授权接口", d["ok"], d)
     hdrs, payload = captured["create139"][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")
