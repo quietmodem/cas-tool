@@ -9,8 +9,9 @@ cas_web.py — cas_tool 的 Web 后台(iOS 友好),配合 cas_tool.py 使用。
     浏览目录、流式下载算哈希生成 .cas、把 .cas 上传回网盘、种子秒传保存。
   - 移动版 .cas 还原仍直调 139 接口(CAS139_PHONE / CAS139_AUTH),
     因为 OpenList 的种子秒传保存没有接移动 CAS。
-  - 生成的 / 上传的 .cas 存放在服务端数据目录(CAS_DATA_DIR,容器里是 /data),
-    形成一个 cas 库,手机上可随时下载 / 还原 / 删除。
+  - v1.5.0 起不再保存本地 cas 库:生成的 .cas 在任务里直接下载,或上传回
+    网盘原文件旁边;还原确认成功后 .cas 也旁存到视频同目录。服务端数据目录
+    (CAS_DATA_DIR,容器里是 /data)只存设置(天翼/移动主目录)。
   - 页面为单文件原生 HTML/CSS/JS,大按钮、响应式,针对 iPhone Safari 操作优化。
 
 环境变量:
@@ -37,14 +38,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
-LIB_DIR = os.path.join(DATA_DIR, "caslib")
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 MIB = 1024 * 1024
 
-os.makedirs(LIB_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # OpenList 接口
@@ -69,8 +69,8 @@ def ol_post(route, payload):
     return resp.get("data")
 
 
-def ol_list(path):
-    data = ol_post("/fs/list", {"path": path, "page": 1, "per_page": 0, "refresh": False})
+def ol_list(path, refresh=False):
+    data = ol_post("/fs/list", {"path": path, "page": 1, "per_page": 0, "refresh": bool(refresh)})
     content = (data or {}).get("content") or []
     return [{"name": e.get("name", ""), "size": e.get("size", 0),
              "is_dir": bool(e.get("is_dir"))} for e in content]
@@ -144,17 +144,6 @@ def job_update(jid, **kw):
             JOBS[jid].update(kw)
 
 
-def lib_path_for(cas_name):
-    safe = cas_name.replace("/", "_").replace("\\", "_").strip()
-    if not safe:
-        safe = "unnamed.cas"
-    path = os.path.join(LIB_DIR, safe)
-    if os.path.exists(path):
-        stem, ext = os.path.splitext(safe)
-        path = os.path.join(LIB_DIR, "%s.%d%s" % (stem, int(time.time()), ext))
-    return path
-
-
 def run_gen_job(jid, ol_path, size, upload_back):
     """从 OpenList 流式读取文件,一遍算完 md5/逐片 md5/sha256,生成双填 .cas。"""
     try:
@@ -200,10 +189,8 @@ def run_gen_job(jid, ol_path, size, upload_back):
             "create_time": str(int(time.time())),
         }
         cas_bytes = ct.encode_cas(cas_obj)
-        out_path = lib_path_for(name + ".cas")
-        with open(out_path, "wb") as f:
-            f.write(cas_bytes)
-        result = {"cas_file": os.path.basename(out_path), "name": name, "size": size}
+        result = {"name": name, "size": size,
+                  "cas_b64": base64.b64encode(cas_bytes).decode()}
         if upload_back:
             job_update(jid, message="上传 .cas 回网盘同目录 ...")
             ol_put(ol_path + ".cas", cas_bytes)
@@ -431,10 +418,6 @@ class Handler(BaseHTTPRequestHandler):
                 with JOBS_LOCK:
                     jobs = sorted(JOBS.values(), key=lambda j: -j["ts"])
                 return self.ok(jobs[:30])
-            if path == "/api/lib":
-                return self.api_lib()
-            if path == "/api/lib/download":
-                return self.api_lib_download(qs)
             return self.fail("无此路径", status=404)
         except Exception as e:  # noqa: BLE001
             return self.fail(e)
@@ -473,9 +456,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.fail("压缩包里没找到 .cas 文件")
                 return self.ok(items)
             if path == "/api/exists":
-                entries = ol_list(body.get("path") or "/")
-                name = body.get("name") or ""
-                return self.ok({"found": any(e.get("name") == name for e in entries)})
+                # 天翼目录列表有延迟/缓存:轮询最多约 30 秒,第二次起强制刷新,名字大小写不敏感
+                epath = (body.get("path") or "/").rstrip("/") or "/"
+                ename = (body.get("name") or "").strip().lower()
+                found = False
+                for attempt in range(8):
+                    entries = ol_list(epath, refresh=attempt > 0)
+                    if any((e.get("name") or "").strip().lower() == ename for e in entries):
+                        found = True
+                        break
+                    if attempt < 7:
+                        time.sleep(4)
+                return self.ok({"found": found})
             if path == "/api/sidecar":
                 return self.api_sidecar(body)
             if path == "/api/gen":
@@ -494,12 +486,6 @@ class Handler(BaseHTTPRequestHandler):
                 ok, msg = restore_openlist(cas_bytes, body.get("cas_name") or "file.cas",
                                             body.get("target") or "")
                 return self.ok(msg=msg) if ok else self.fail(msg)
-            if path == "/api/lib/add":
-                return self.api_lib_add(body)
-            if path == "/api/lib/delete":
-                return self.api_lib_delete(body)
-            if path == "/api/lib/restore":
-                return self.api_lib_restore(body)
             return self.fail("无此路径", status=404)
         except Exception as e:  # noqa: BLE001
             return self.fail(e)
@@ -537,53 +523,9 @@ class Handler(BaseHTTPRequestHandler):
         t.start()
         return self.ok({"job_id": jid})
 
-    def api_lib(self):
-        items = []
-        for fn in sorted(os.listdir(LIB_DIR)):
-            fp = os.path.join(LIB_DIR, fn)
-            if not os.path.isfile(fp):
-                continue
-            item = {"file": fn, "mtime": int(os.path.getmtime(fp))}
-            try:
-                with open(fp, "rb") as f:
-                    item.update(cas_summary(f.read()))
-            except Exception as e:  # noqa: BLE001
-                item["kind"] = "解析失败: %s" % e
-            items.append(item)
-        items.sort(key=lambda x: -x["mtime"])
-        return self.ok(items)
-
-    def api_lib_download(self, qs):
-        name = (qs.get("name") or [""])[0]
-        fp = os.path.join(LIB_DIR, os.path.basename(name))
-        if not os.path.isfile(fp):
-            return self.fail("文件不存在", status=404)
-        with open(fp, "rb") as f:
-            data = f.read()
-        disp = "attachment; filename*=UTF-8''" + urllib.parse.quote(os.path.basename(name))
-        return self.send_bytes(data, "application/octet-stream",
-                               extra={"Content-Disposition": disp})
-
-    def api_lib_add(self, body):
-        cas_bytes = base64.b64decode(body.get("cas_b64", ""))
-        summary = cas_summary(cas_bytes)  # 先验证能解析
-        name = (summary.get("name") or "file") + ".cas"
-        fp = lib_path_for(name)
-        with open(fp, "wb") as f:
-            f.write(cas_bytes)
-        return self.ok({"file": os.path.basename(fp), **summary})
-
     def api_sidecar(self, body):
-        """把 .cas 作为侧车文件存到目标目录里视频旁边:<dir>/<视频名>.cas。
-        cas 来源二选一:cas_b64(页面当前这份)或 lib_file(cas 库里的文件名)。"""
-        if body.get("lib_file"):
-            fp = os.path.join(LIB_DIR, os.path.basename(body["lib_file"]))
-            if not os.path.isfile(fp):
-                return self.fail("cas 库里没有这个文件")
-            with open(fp, "rb") as f:
-                cas_bytes = f.read()
-        else:
-            cas_bytes = base64.b64decode(body.get("cas_b64", ""))
+        """把 .cas 作为侧车文件存到目标目录里视频旁边:<dir>/<视频名>.cas。"""
+        cas_bytes = base64.b64decode(body.get("cas_b64", ""))
         summary = cas_summary(cas_bytes)
         video = body.get("video_name") or summary.get("name") or ""
         if not video:
@@ -592,29 +534,6 @@ class Handler(BaseHTTPRequestHandler):
         ol_put(dest, cas_bytes)
         return self.ok({"path": dest})
 
-    def api_lib_delete(self, body):
-        fp = os.path.join(LIB_DIR, os.path.basename(body.get("file") or ""))
-        if os.path.isfile(fp):
-            os.remove(fp)
-            return self.ok(msg="已删除")
-        return self.fail("文件不存在")
-
-    def api_lib_restore(self, body):
-        fp = os.path.join(LIB_DIR, os.path.basename(body.get("file") or ""))
-        if not os.path.isfile(fp):
-            return self.fail("文件不存在")
-        with open(fp, "rb") as f:
-            cas_bytes = f.read()
-        to = body.get("to")
-        if to == "mobile":
-            ok, msg = restore_139(cas_bytes, body.get("parent") or "/")
-        elif to == "tianyi":
-            ok, msg = restore_189(cas_bytes, os.path.basename(fp), body.get("target") or "")
-        elif to == "openlist":
-            ok, msg = restore_openlist(cas_bytes, os.path.basename(fp), body.get("target") or "")
-        else:
-            return self.fail("to 只能是 mobile / tianyi / openlist")
-        return self.ok(msg=msg) if ok else self.fail(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +546,7 @@ LOGIN_HTML = """<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 body{font-family:-apple-system,system-ui,sans-serif;margin:0;background:#f2f2f7;color:#111}
 .wrap{max-width:420px;margin:15vh auto;padding:20px}
 input,button{width:100%;box-sizing:border-box;font-size:17px;padding:13px;border-radius:10px;border:1px solid #c7c7cc;margin-top:10px}
-button{background:#007aff;color:#fff;border:none;font-weight:600}
+button{background:#0a6cff;color:#fff;border:none;font-weight:600}
 </style></head><body><div class="wrap"><h2>🔐 CAS 双云工具</h2>
 <input id="pw" type="password" placeholder="访问口令" autocomplete="current-password">
 <button onclick="login()">进入</button><p id="m" style="color:#c00"></p></div>
@@ -646,29 +565,35 @@ INDEX_HTML = r"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>CAS 双云工具</title><style>
 :root{color-scheme:light dark}
 *{box-sizing:border-box}
-body{font-family:-apple-system,system-ui,sans-serif;margin:0;background:#f2f2f7;color:#111}
-@media (prefers-color-scheme:dark){body{background:#000;color:#eee}.card{background:#1c1c1e!important}.row{border-color:#333!important}input,textarea,select{background:#2c2c2e;color:#eee;border-color:#444!important}}
-.wrap{max-width:760px;margin:0 auto;padding:12px 12px 40px}
-h1{font-size:20px;margin:8px 0}
-h2{font-size:16px;margin:0 0 8px}
-.card{background:#fff;border-radius:14px;padding:14px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-button{font-size:15px;padding:10px 14px;border-radius:10px;border:none;background:#007aff;color:#fff;font-weight:600;min-height:44px}
-button.grey{background:#8e8e93}button.green{background:#34c759}button.red{background:#ff3b30}
-button.small{padding:6px 10px;min-height:36px;font-size:13px}
-input,textarea{width:100%;font-size:16px;padding:10px;border-radius:10px;border:1px solid #c7c7cc;margin:6px 0}
+body{font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;background:#eceef3;color:#111;-webkit-tap-highlight-color:transparent}
+@media (prefers-color-scheme:dark){body{background:#0b0b0f;color:#eee}.card{background:#1b1b20!important;box-shadow:none!important}input,textarea,select{background:#26262c!important;color:#eee;border-color:#3a3a42!important}.tabbar{background:#26262c!important}.tabbtn{color:#aaa!important}.tabbtn.on{background:#3a3a42!important;color:#fff!important;box-shadow:none!important}button.grey{background:#33333a!important;color:#eee!important}.crumb{background:#22314d!important}.row{border-color:#2c2c33!important}.dirrow:active{background:#22314d!important}}
+.wrap{max-width:720px;margin:0 auto;padding:14px 14px 48px}
+h1{font-size:21px;margin:10px 2px 0;font-weight:700;letter-spacing:.2px}
+h2{font-size:15px;margin:0 0 10px;font-weight:600}
+.card{background:#fff;border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 2px 12px rgba(25,35,70,.07)}
+button{font-size:15px;padding:11px 16px;border-radius:12px;border:none;background:#0a6cff;color:#fff;font-weight:600;min-height:46px;cursor:pointer}
+button:active{opacity:.7}
+button.grey{background:#e8eaf0;color:#222}button.green{background:#2fae4e}button.red{background:#e5484d}
+button.small{padding:7px 12px;min-height:38px;font-size:13px;border-radius:10px}
+input,textarea{width:100%;font-size:16px;padding:11px 12px;border-radius:12px;border:1.5px solid #d9dde6;margin:6px 0;background:#fcfdff;outline:none}
+input:focus,textarea:focus{border-color:#0a6cff}
 textarea{min-height:64px}
-.row{display:flex;align-items:center;gap:8px;padding:10px 4px;border-bottom:1px solid #e5e5ea}
+.row{display:flex;align-items:center;gap:9px;padding:9px 2px;border-bottom:1px solid #eef0f4}
 .row .grow{flex:1;min-width:0;word-break:break-all}
+.dirrow{cursor:pointer;border-radius:10px}
+.dirrow:active{background:#eef4ff}
 .bar{height:8px;background:#e5e5ea;border-radius:4px;overflow:hidden;margin-top:6px}
-.bar>i{display:block;height:100%;background:#007aff}
+.bar>i{display:block;height:100%;background:#0a6cff}
 .mut{color:#8e8e93;font-size:13px}
 .msg{white-space:pre-wrap;word-break:break-all;font-size:14px;margin-top:8px}
-.err{color:#ff3b30}.good{color:#248a3d}
+.err{color:#e5484d}.good{color:#248a3d}
 .kv{font-size:13px;color:#666;word-break:break-all}
-.tabbar{display:flex;gap:8px;margin:12px 0 0}
-.tabbtn{flex:1;background:#e5e5ea;color:#111}
-.tabbtn.on{background:#007aff;color:#fff}
-@media (prefers-color-scheme:dark){.tabbtn{background:#2c2c2e;color:#eee}.tabbtn.on{background:#007aff;color:#fff}}
+.tabbar{position:sticky;top:10px;z-index:6;display:flex;gap:4px;background:#dde1e9;padding:4px;border-radius:14px;margin:14px 0 2px}
+.tabbtn{flex:1;background:transparent;color:#5a5f6a;border-radius:11px;min-height:42px;box-shadow:none}
+.tabbtn.on{background:#fff;color:#111;box-shadow:0 1px 5px rgba(0,0,0,.14)}
+.crumbs{padding:8px 2px 2px;font-size:14px;line-height:2.1}
+.crumb{color:#0a6cff;background:#e9f1fe;padding:4px 10px;border-radius:8px;cursor:pointer;white-space:nowrap}
+#restorebox>button{display:block;width:100%;margin-top:9px}
 </style></head><body><div class="wrap">
 <h1>🗂 CAS 双云工具 <span class="mut" id="ver"></span></h1>
 <div class="card"><div id="status" class="msg">检查连接中…</div></div>
@@ -680,10 +605,14 @@ textarea{min-height:64px}
 </div>
 
 <div id="picker" class="card" style="display:none">
-<div class="row"><button class="small grey" onclick="pickerUp()">⬆ 上级</button><span class="grow" id="pickerpath">/</span></div>
-<div id="pickerlist"></div>
-<div class="row"><button class="small green" onclick="pickerUse()">✔ 用当前目录</button>
+<div class="row"><b class="grow">📁 选择目录</b>
+<button class="small green" onclick="pickerUse()">✔ 用当前目录</button>
 <button class="small grey" onclick="togglePicker()">关闭</button></div>
+<div id="crumbs" class="crumbs"></div>
+<div class="row"><input id="pickerfilter" class="grow" placeholder="筛选本层文件夹…" oninput="renderPicker()">
+<button class="small grey" onclick="pickerHome('189')">天翼主目录</button>
+<button class="small grey" onclick="pickerHome('139')">移动主目录</button></div>
+<div id="pickerlist"></div>
 </div>
 
 <div id="tab-restore">
@@ -692,7 +621,6 @@ textarea{min-height:64px}
 <div class="mut">可多选 .cas,也可选含多个 .cas 的 .zip 压缩包</div>
 <textarea id="castext" placeholder="或把 .cas 的内容(Base64 文本)粘贴到这里"></textarea>
 <button onclick="inspectCas()">解析</button>
-<button class="grey" onclick="saveToLib()">存入 cas 库</button>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
 <div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼主目录,OL按钮用移动主目录)">
@@ -700,14 +628,12 @@ textarea{min-height:64px}
 <div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼主目录</button>
 <button class="small grey" onclick="fillHome('139')">填入移动主目录</button></div>
 <input id="parent139" value="/" placeholder="移动直调时父目录 fileId(根目录填 /)">
-<label class="mut"><input type="checkbox" id="savecas" style="width:auto" checked> 还原时同时把这份 .cas 存入 cas 库</label>
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原确认成功后,把 .cas 也存到目标目录(视频旁边,仅经 OpenList 的还原)</label>
 <button class="green" onclick="doRestore('mobile')">还原到移动(直调139接口)</button>
 <button class="green" onclick="doRestore('tianyi')">还原到天翼(经OpenList)</button>
 <button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录</button>
 </div><div id="restoremsg" class="msg"></div></div>
 
-<div class="card"><h2>cas 库(存在群晖上)</h2><div id="lib"></div></div>
 </div>
 
 <div id="tab-gen" style="display:none">
@@ -794,14 +720,6 @@ function renderBatch(){
   ).join('') + (batchItems.length>1? '<div class=mut>共 '+batchItems.length+' 份 cas</div>':'');
 }
 function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }
-async function saveToLib(){
-  if(!batchItems.length) await inspectCas();
-  if(!batchItems.length){ alert('先选择 .cas 文件'); return; }
-  let n=0;
-  for(const it of batchItems){ const d = await api('/api/lib/add',{cas_b64:it.b64}); if(d.ok) n++; }
-  $('restoremsg').innerHTML = '<span class=good>已存入 cas 库 '+n+' 份</span>';
-  if(n) loadLib();
-}
 let pickerPath='/', pickerTarget='target189';
 function switchTab(name){
   for(const n of ['restore','gen','settings']){
@@ -834,19 +752,35 @@ function togglePicker(targetId){
   if(show && targetId){ pickerPath = ($(pickerTarget).value||'').trim() || '/'; }
   p.style.display=show?'block':'none'; if(show) loadPicker();
 }
+let pickerDirs=[];
 async function loadPicker(){
+  renderCrumbs();
+  $('pickerlist').innerHTML='<div class="mut" style="padding:8px 2px">加载中…</div>';
   const d = await api('/api/list?path='+encodeURIComponent(pickerPath));
   if(!d.ok){ $('pickerlist').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
-  $('pickerpath').textContent=pickerPath;
-  $('pickerlist').innerHTML = d.data.entries.filter(e=>e.is_dir).map(e=>{
-    const p = (pickerPath==='/'?'':pickerPath)+'/'+e.name;
-    return '<div class=row><span class=grow>📁 '+esc(e.name)+'</span>'+
-      '<button class="small" onclick="pickerEnter(\''+esc(p)+'\')">打开</button>'+
-      '<button class="small green" onclick="pickerPick(\''+esc(p)+'\')">选这个</button></div>';
-  }).join('') || '<div class=mut>没有子文件夹</div>';
+  pickerDirs = d.data.entries.filter(e=>e.is_dir);
+  renderPicker();
 }
-function pickerEnter(p){ pickerPath=p; loadPicker(); }
-function pickerUp(){ if(pickerPath!=='/'){ pickerPath=pickerPath.split('/').slice(0,-1).join('/')||'/'; loadPicker(); } }
+function renderCrumbs(){
+  const parts = pickerPath==='/'? [] : pickerPath.split('/').filter(Boolean);
+  let html='<span class="crumb" onclick="pickerGo(\'/\')">根目录</span>';
+  let acc='';
+  for(const p of parts){ acc+='/'+p; html+=' <span class="mut">›</span> <span class="crumb" onclick="pickerGo(\''+esc(acc)+'\')">'+esc(p)+'</span>'; }
+  $('crumbs').innerHTML=html;
+}
+function renderPicker(){
+  const q=(($('pickerfilter').value)||'').trim().toLowerCase();
+  const items=pickerDirs.filter(e=>!q||e.name.toLowerCase().includes(q));
+  $('pickerlist').innerHTML = items.length? items.map(e=>{
+    const p=(pickerPath==='/'?'':pickerPath)+'/'+e.name;
+    return '<div class="row dirrow" onclick="pickerEnter(\''+esc(p)+'\')"><span>📁</span><span class="grow">'+esc(e.name)+'</span>'+
+      '<button class="small green" onclick="event.stopPropagation();pickerPick(\''+esc(p)+'\')">选这个</button></div>';
+  }).join('') : '<div class="mut" style="padding:8px 2px">'+(q?'没有匹配的文件夹':'这一层没有文件夹,点上面「✔ 用当前目录」就是它')+'</div>';
+}
+function pickerGo(p){ pickerPath=p; $('pickerfilter').value=''; loadPicker(); }
+function pickerEnter(p){ pickerGo(p); }
+function pickerUp(){ if(pickerPath!=='/') pickerGo(pickerPath.split('/').slice(0,-1).join('/')||'/'); }
+function pickerHome(which){ const v=which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home; if(v){ pickerGo(v); } else alert('还没设置主目录,先到「设置」页设置'); }
 function pickerPick(p){ $(pickerTarget).value=p; $('picker').style.display='none'; }
 function pickerUse(){ pickerPick(pickerPath); }
 const sleepMs=ms=>new Promise(r=>setTimeout(r,ms));
@@ -860,7 +794,6 @@ async function doRestore(to){
     const it=batchItems[i];
     if(!it.info){ badN++; continue; }
     setSt(i,'还原中…','mut');
-    if($('savecas').checked) await api('/api/lib/add',{cas_b64:it.b64});
     const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||'/'}
                               : {cas_b64:it.b64,cas_name:it.name,target:target};
     const d = await api(url,body);
@@ -878,7 +811,6 @@ async function doRestore(to){
     }
     else { setSt(i,'⚠ 已提交,但在 '+target+' 还没看到这个文件(可能仍在处理,或保存失败,请看 OpenList 后台任务/日志)','err'); badN++; }
   }
-  if($('savecas').checked) loadLib();
   $('restoremsg').innerHTML='批量还原完成: 确认成功 '+okN+' · 未确认/失败 '+badN+'(目标目录: '+esc(target)+')';
 }
 async function loadList(){
@@ -898,32 +830,6 @@ async function genCas(p,size){
   alert(d.ok? '已开始生成,进度看「任务」区' : d.msg);
   loadJobs();
 }
-async function loadLib(){
-  const d = await api('/api/lib');
-  if(!d.ok){ $('lib').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
-  $('lib').innerHTML = d.data.map(it=>
-    '<div class=row><span class=grow>📄 '+esc(it.name||it.file)+'<br><span class=mut>'+esc(it.kind||'')+' · '+(it.size||'')+' 字节</span></span>'+
-    '<button class="small" onclick="dlLib(\''+esc(it.file)+'\')">下载</button>'+
-    '<button class="small green" onclick="libRestore(\''+esc(it.file)+'\',\'mobile\')">移动还原</button>'+
-    '<button class="small green" onclick="libRestore(\''+esc(it.file)+'\',\'tianyi\')">天翼还原</button>'+
-    '<button class="small green" onclick="libRestore(\''+esc(it.file)+'\',\'openlist\')">OL还原</button>'+
-    '<button class="small red" onclick="delLib(\''+esc(it.file)+'\')">删</button></div>'
-  ).join('') || '<div class=mut>库里还没有 cas</div>';
-}
-function dlLib(f){ location.href='/api/lib/download?name='+encodeURIComponent(f); }
-async function delLib(f){ if(!confirm('删除 '+f+' ?'))return; const d=await api('/api/lib/delete',{file:f}); loadLib(); }
-async function libRestore(f,to){
-  let body={file:f,to:to};
-  if(to==='tianyi'||to==='openlist'){ let t=($('target189').value||'').trim() || (to==='tianyi'? SETTINGS.tianyi_home : SETTINGS.mobile_home); if(!t){ t=prompt('OpenList 目标目录(天翼或移动挂载路径)','/'); if(!t)return; } body.target=t; }
-  else { const p=prompt('移动父目录 fileId(根目录 /)','/'); if(p===null)return; body.parent=p; }
-  const d = await api('/api/lib/restore',body);
-  if(d.ok && (to==='tianyi'||to==='openlist') && $('sidecar').checked){
-    const sc = await api('/api/sidecar',{dir:body.target,lib_file:f});
-    alert(d.msg + (sc.ok? '\n.cas 已存到 '+sc.data.path : '\n.cas 存同目录失败: '+sc.msg));
-    return;
-  }
-  alert(d.ok? d.msg : '失败: '+d.msg);
-}
 async function loadJobs(){
   const d = await api('/api/jobs');
   if(!d.ok||!d.data.length) return;
@@ -931,11 +837,10 @@ async function loadJobs(){
     '<div style="margin:8px 0"><div>'+esc(j.title)+'</div>'+
     '<div class=mut>'+esc(j.status)+(j.progress!=null? ' · '+j.progress+'%':'')+' · '+esc(j.message||'')+'</div>'+
     (j.progress!=null&&j.status==='running'? '<div class=bar><i style="width:'+j.progress+'%"></i></div>':'')+
-    (j.status==='done'&&j.result? '<div class=good>已存入 cas 库: '+esc(j.result.cas_file||'')+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>':'')+
+    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>'+(j.result.cas_b64? '<div style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载这份 .cas</button></a></div>':''):'')+
     '</div>').join('');
-  if(d.data.some(j=>j.status==='done')) loadLib();
 }
-status(); loadSettings(); loadList(); loadLib(); loadJobs();
+status(); loadSettings(); loadList(); loadJobs();
 setInterval(loadJobs, 2500);
 </script></body></html>"""
 

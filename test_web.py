@@ -152,13 +152,16 @@ def main():
     # a) 首页
     st, html, _ = req("GET", base + "/", raw=True)
     check("首页可打开", st == 200 and "CAS 双云工具".encode() in html)
-    check("首页含目录选择器与保存勾选", all(x in html for x in
-          ["选目录".encode(), b'id="picker"', b'id="savecas"', b"pickerPick", b"loadPicker"]))
+    check("首页含目录选择器", all(x in html for x in
+          ["选目录".encode(), b'id="picker"', b"pickerPick", b"loadPicker", b"renderPicker"]))
     check("首页含批量/zip 支持", all(x in html for x in
           [b"multiple", b"unzipcas", b"batchItems", b"/api/exists", b'id="sidecar"']))
     check("首页含三选项卡与设置页", all(x in html for x in
           [b'id="tab-restore"', b'id="tab-gen"', b'id="tab-settings"', b"switchTab",
            b'id="home189"', b'id="home139"', b"/api/settings"]))
+    check("首页含新选择器(面包屑/筛选)且无 cas 库", all(x in html for x in
+          [b'id="pickerfilter"', b'id="crumbs"', b"renderCrumbs", b"pickerHome"])
+          and b"saveToLib" not in html and b'id="lib"' not in html)
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
@@ -184,10 +187,9 @@ def main():
             break
         time.sleep(0.5)
     check("gen 任务完成", job["status"] == "done", job)
-    cas_file = job["result"]["cas_file"]
+    cas_bytes = base64.b64decode(job["result"]["cas_b64"])
+    cas_file = FNAME + ".cas"
     check("gen 结果记录上传路径", job["result"].get("uploaded_to") == FPATH + ".cas", job["result"])
-    with open(os.path.join(cas_web.LIB_DIR, cas_file), "rb") as f:
-        cas_bytes = f.read()
     obj = ct.decode_cas_bytes(cas_bytes)
     exp_md5 = hashlib.md5(CONTENT).hexdigest().upper()
     exp_sha = hashlib.sha256(CONTENT).hexdigest()
@@ -238,18 +240,6 @@ def main():
     check("rapid_upload 载荷正确",
           rapid["path"] == "/天翼云盘/电影" and rapid["file_name"] == cas_file
           and base64.b64decode(rapid["seed_data"]) == cas_bytes)
-
-    # h) cas 库:列表/下载/还原/删除
-    st, d, _ = req("GET", base + "/api/lib")
-    check("cas 库有刚生成的文件", any(it["file"] == cas_file for it in d["data"]), d)
-    st, data, hdrs = req("GET", base + "/api/lib/download?name=" + urllib.parse.quote(cas_file), raw=True)
-    check("cas 库下载内容一致", data == cas_bytes)
-    st, d, _ = req("POST", base + "/api/lib/restore", {"file": cas_file, "to": "mobile", "parent": "/"})
-    check("从库还原到移动", d["ok"], d)
-    st, d, _ = req("POST", base + "/api/lib/delete", {"file": cas_file})
-    check("从库删除", d["ok"])
-    st, d, _ = req("GET", base + "/api/lib")
-    check("删除后库为空", len(d["data"]) == 0)
 
     # j) 经 OpenList 通用还原(移动版 cas -> 移动挂载目录,交给 OpenList 预检裁决)
     before = len([1 for k, _ in captured["seed"] if k == "rapid_upload"])
