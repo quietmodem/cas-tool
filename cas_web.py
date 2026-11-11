@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.7.0"
+VERSION = "2.7.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -828,6 +828,34 @@ def cas_summary(cas_bytes):
     }
 
 
+def _scan_original_state(summary, entries):
+    """根据 CAS 所在目录的文件清单判定原文件状态。
+
+    返回 (state, existing_size)：同名且同大小为 existing；同名但
+    大小不同为 name_conflict；未找到同名文件为 missing。
+    """
+    target = str(summary.get("name") or "").strip().lower()
+    if not target:
+        return "missing", None
+    try:
+        wanted_size = int(summary.get("size"))
+    except (TypeError, ValueError):
+        wanted_size = None
+    for entry in entries:
+        if entry.get("is_dir"):
+            continue
+        if str(entry.get("name") or "").strip().lower() != target:
+            continue
+        try:
+            existing_size = int(entry.get("size") or 0)
+        except (TypeError, ValueError):
+            existing_size = None
+        if wanted_size is not None and existing_size == wanted_size:
+            return "existing", existing_size
+        return "name_conflict", existing_size
+    return "missing", None
+
+
 # ---------------------------------------------------------------------------
 # HTTP 服务
 # ---------------------------------------------------------------------------
@@ -1118,7 +1146,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_list(self, qs):
         path = (qs.get("path") or ["/"])[0]
-        entries = ol_list(path)
+        refresh = (qs.get("refresh") or [""])[0] == "1"
+        entries = ol_list(path, refresh=refresh)
         return self.ok({"path": path, "entries": entries})
 
     def api_gen(self, body):
@@ -1145,7 +1174,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(found) >= 300:
                 return
             try:
-                entries = ol_list(dirpath)
+                entries = ol_list(dirpath, refresh=True)
             except Exception:  # noqa: BLE001
                 return
             for e in entries:
@@ -1159,12 +1188,16 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         with ol_download_iter(p) as resp:
                             data = resp.read()
+                        summary = cas_summary(data)
+                        state, original_size = _scan_original_state(summary, entries)
                         found.append({"path": p, "cas_name": e["name"],
                                       "cas_b64": base64.b64encode(data).decode(),
                                       "source_type": "ol",
                                       "source_dir": dirpath,
                                       "source_parent_id": "",
-                                      **cas_summary(data)})
+                                      "original_state": state,
+                                      "original_size": original_size,
+                                      **summary})
                     except Exception:  # noqa: BLE001
                         continue
 
@@ -1200,13 +1233,17 @@ class Handler(BaseHTTPRequestHandler):
                             url, headers={"User-Agent": "cas-tool"})
                         with urllib.request.urlopen(req, timeout=60) as resp:
                             data = resp.read()
+                        summary = cas_summary(data)
+                        state, original_size = _scan_original_state(summary, entries)
                         found.append({"path": disp + "/" + e["name"],
                                       "cas_name": e["name"],
                                       "cas_b64": base64.b64encode(data).decode(),
                                       "source_type": "139",
                                       "source_dir": disp,
                                       "source_parent_id": fid,
-                                      **cas_summary(data)})
+                                      "original_state": state,
+                                      "original_size": original_size,
+                                      **summary})
                     except Exception:  # noqa: BLE001
                         continue
 
@@ -1343,7 +1380,7 @@ button:disabled{opacity:.35}
 <button class="green" id="btnMb" onclick="doRestore('mobile')">还原到移动云盘</button>
 </div><div id="restoremsg" class="msg"></div>
 <div style="border-top:1px solid #eef0f4;margin-top:14px;padding-top:12px">
-<h2>🔍 扫描网盘目录里的 .cas</h2>
+<h2>🔍 扫描网盘CAS</h2>
 <div class="row"><input id="scanpath" class="grow" placeholder="要扫描的目录(选目录里可切换天翼/移动)" oninput="scanSrc='ol';scan139=null">
 <button class="small grey" onclick="togglePicker('scanpath')">📁 选目录</button>
 <button class="small" onclick="scanCas()">开始扫描</button></div>
@@ -1351,9 +1388,9 @@ button:disabled{opacity:.35}
 <div id="scanmsg" class="msg"></div>
 <div id="scanlist"></div>
 <div id="scanbtns" style="display:none">
-<div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选</button>
+<div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选可还原</button>
 <button class="small grey" onclick="scanCheckAll(false)">全不选</button>
-<span class="mut">推送时目标目录用上方还原区；原目录还原不使用目标目录</span></div>
+<span class="mut">全选仅选择可还原条目；推送时目标目录用上方还原区</span></div>
 <div class="row"><button class="green" onclick="pushScanToRestore()">⬆ 推送到还原区</button>
 <button onclick="restoreScanInPlace()">原目录还原</button></div>
 <div id="scanrestoremsg" class="msg"></div>
@@ -1525,22 +1562,31 @@ async function scanCas(){
     d=await api('/api/scan',{path:p,recursive:$('scanrec').checked});
   }
   if(!d.ok){ $('scanmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
-  if(!d.data.length){ $('scanmsg').textContent='这个目录下没找到 .cas 文件'; scanItems=[]; $('scanlist').innerHTML=''; return; }
+  if(!d.data.length){ $('scanmsg').textContent='该目录下未找到 CAS 文件'; scanItems=[]; $('scanlist').innerHTML=''; return; }
   scanItems = d.data.map(x=>({name:x.cas_name, b64:x.cas_b64, src:x.path,
     srcType:x.source_type || (scanSrc==='139'? '139' : 'ol'),
     srcDir:x.source_dir || '', srcParent:x.source_parent_id || '',
+    origState:x.original_state || 'missing', origSize:x.original_size,
     info:{name:x.name, size:x.size, kind:x.kind, md5:x.md5, sliceMd5:x.sliceMd5, sha256:x.sha256}}));
   renderScan();
   $('restorebox').style.display='block';
   $('scanbtns').style.display='block';
-  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas</span> —— 在列表中勾选后,可推送到还原区,或点「原目录还原」直接还原到 cas 所在目录';
+  const counts={missing:0, existing:0, name_conflict:0};
+  scanItems.forEach(it=>{ counts[it.origState]=(counts[it.origState]||0)+1; });
+  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 CAS</span>'
+    +' —— 可还原 '+counts.missing+' 份 · 原文件已存在 '+counts.existing+' 份 · 同名大小不一致 '+counts.name_conflict+' 份';
+}
+function scanStateInfo(it){
+  if(it.origState==='existing') return {text:' ✓ 原文件已存在', cls:'good'};
+  if(it.origState==='name_conflict') return {text:' ⚠ 同名文件大小不一致(现有 '+esc(it.origSize)+' 字节)', cls:'err'};
+  return {text:'', cls:'mut'};
 }
 function renderScan(){ setTimeout(refreshBtns, 0);
   $('scanlist').innerHTML = scanItems.map((it,i)=>
-    '<div><label><input type="checkbox" class="scanchk" data-i="'+i+'" style="width:auto" onchange="refreshBtns()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="sst'+i+'"></span>'+
+    '<div><label><input type="checkbox" class="scanchk" data-i="'+i+'" style="width:auto" onchange="refreshBtns()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="sst'+i+'" class="'+scanStateInfo(it).cls+'">'+scanStateInfo(it).text+'</span>'+
     '<br><span class=kv>来源: '+esc(it.src)+'</span></div>').join('');
 }
-function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>c.checked=v); refreshBtns(); }
+function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>{ const it=scanItems[Number(c.dataset.i)]; c.checked = v && it && it.origState==='missing'; }); refreshBtns(); }
 function scanSetSt(i,txt,cls){ const el=$('sst'+i); if(el){ el.textContent=txt; el.className=cls; } }
 function pushScanToRestore(){
   const picked=[];
@@ -1561,15 +1607,56 @@ function pushScanToRestore(){
   window.scrollTo({top:0, behavior:'smooth'});
 }
 let scanRestoring=false;
+async function refreshScanState(it, cache){
+  const key = it.srcType==='139'? '139:'+it.srcParent : 'ol:'+(it.srcDir||'');
+  if(!cache.has(key)){
+    cache.set(key, (async()=>{
+      try{
+        if(it.srcType==='139'){
+          const d=await api('/api/m139/list',{parent:it.srcParent});
+          return d.ok? (d.data.items||[]) : null;
+        }
+        const target=it.srcDir || (it.src.replace(/\/[^\/]*$/,'') || '/');
+        const d=await api('/api/list?path='+encodeURIComponent(target)+'&refresh=1');
+        return d.ok? (d.data.entries||[]) : null;
+      }catch(e){ return null; }
+    })());
+  }
+  const entries=await cache.get(key);
+  if(!entries) return it.origState;
+  const wanted=String(it.info.name||'').trim().toLowerCase();
+  const found=entries.find(e=>!e.is_dir && String(e.name||'').trim().toLowerCase()===wanted);
+  if(!found){ it.origState='missing'; it.origSize=null; }
+  else {
+    const sz=Number(found.size||0);
+    it.origSize=sz;
+    it.origState = sz===Number(it.info.size)? 'existing' : 'name_conflict';
+  }
+  return it.origState;
+}
 async function restoreScanInPlace(){
   if(scanRestoring) return;
   const picked=[];
   scanItems.forEach((it,i)=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); if(c && c.checked) picked.push(i); });
-  if(!picked.length){ alert('请先在扫描列表中勾选 cas'); return; }
-  if(!confirm('将所选 '+picked.length+' 份 cas 分别还原到其所在目录,是否继续?')) return;
+  if(!picked.length){ alert('请先在扫描列表中勾选 CAS'); return; }
   scanRestoring=true;
-  let okN=0, badN=0;
+  let okN=0, skipN=0, badN=0;
+  const cache=new Map(), actionable=[];
   for(const i of picked){
+    const it=scanItems[i];
+    scanSetSt(i,' 状态确认中…','mut');
+    await refreshScanState(it, cache);
+    if(it.origState==='existing'){ scanSetSt(i,' ✓ 原文件已存在,已跳过','good'); skipN++; }
+    else if(it.origState==='name_conflict'){ scanSetSt(i,' ⚠ 同名文件大小不一致,已跳过','err'); skipN++; }
+    else actionable.push(i);
+  }
+  if(actionable.length && !confirm('将对 '+actionable.length+' 份 CAS 执行原目录还原'+(skipN? ',另有 '+skipN+' 份将跳过':'')+',是否继续?')){
+    actionable.forEach(i=>scanSetSt(i,'','mut'));
+    $('scanrestoremsg').textContent='已取消原目录还原';
+    scanRestoring=false;
+    return;
+  }
+  for(const i of actionable){
     const it=scanItems[i];
     scanSetSt(i,' 原目录还原中…','mut');
     try{
@@ -1577,6 +1664,7 @@ async function restoreScanInPlace(){
         if(!it.srcParent) throw new Error('缺少来源目录 ID');
         const d=await api('/api/restore139',{cas_b64:it.b64,parent:it.srcParent,sidecar:false});
         if(!d.ok) throw new Error(d.msg||'还原失败');
+        it.origState='existing'; it.origSize=Number(it.info.size);
         scanSetSt(i,' ✓ 已还原到原目录','good'); okN++;
       } else {
         const target=it.srcDir || (it.src.replace(/\/[^\/]*$/,'') || '/');
@@ -1588,7 +1676,10 @@ async function restoreScanInPlace(){
         scanSetSt(i,' 回查中…','mut');
         await sleepMs(1500);
         const ex=await api('/api/exists',{path:target,name:it.info.name});
-        if(ex.ok && ex.data.found){ scanSetSt(i,' ✓ 已还原到原目录','good'); okN++; }
+        if(ex.ok && ex.data.found){
+          it.origState='existing'; it.origSize=Number(it.info.size);
+          scanSetSt(i,' ✓ 已还原到原目录','good'); okN++;
+        }
         else {
           const why=await failReason189(it);
           throw new Error(why||'文件不存在于云端,无法秒传');
@@ -1596,7 +1687,11 @@ async function restoreScanInPlace(){
       }
     }catch(e){ scanSetSt(i,' ✗ '+e.message,'err'); badN++; }
   }
-  $('scanrestoremsg').innerHTML='<span class='+(badN? 'err':'good')+'>原目录还原完成: 成功 '+okN+' · 失败 '+badN+'</span>';
+  if(actionable.length){
+    $('scanrestoremsg').innerHTML='<span class='+(badN? 'err':'good')+'>原目录还原完成: 成功 '+okN+' · 跳过 '+skipN+' · 失败 '+badN+'</span>';
+  } else {
+    $('scanrestoremsg').innerHTML='<span class=good>所选 CAS 均无需还原: 已跳过 '+skipN+' 份</span>';
+  }
   scanRestoring=false;
 }
 function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }

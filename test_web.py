@@ -57,10 +57,12 @@ class MockOL(BaseHTTPRequestHandler):
                            {"name": "备份", "size": 0, "is_dir": True, "id": "LISTID-555"}]
             elif body.get("path") == "/扫描":
                 content = [{"name": "a.cas", "size": len(SCAN_CAS), "is_dir": False},
+                           {"name": "扫描到的影片.mkv", "size": 123456, "is_dir": False},
                            {"name": "视频.mp4", "size": 99, "is_dir": False},
                            {"name": "子目录", "size": 0, "is_dir": True}]
             elif body.get("path") == "/扫描/子目录":
-                content = [{"name": "b.cas", "size": len(SCAN_CAS), "is_dir": False}]
+                content = [{"name": "b.cas", "size": len(SCAN_CAS), "is_dir": False},
+                           {"name": "扫描到的影片.mkv", "size": 999, "is_dir": False}]
             elif body.get("path") == "/删除测试":
                 content = [{"name": "待删源文件.mkv", "size": len(CONTENT), "is_dir": False},
                            {"name": "待删源文件.mkv.cas", "size": len(SCAN_CAS), "is_dir": False}]
@@ -271,6 +273,9 @@ class Mock139(BaseHTTPRequestHandler):
             elif parent == "D1":
                 items = [{"fileId": "F139B", "name": "子文件.mkv",
                           "size": len(CONTENT), "type": "file"},
+                         {"fileId": "ORIG1",
+                          "name": "奥德赛.2026.2160p.V2.BluRay.REMUX.HDR10.10bit.H.265.DTS.5.1.mkv",
+                          "size": 88188041773, "type": "file"},
                          {"fileId": "CAS1", "name": "样本.cas",
                           "size": len(MOCK_CAS_BYTES), "type": "file"}]
             elif parent == "DEL139":
@@ -826,6 +831,31 @@ def main():
           and scan139_item.get("source_dir") == "移动云盘/视频",
           scan139_item)
     check("扫描区有原目录还原", "restoreScanInPlace" in html and "原目录还原" in html)
+    # hh) v2.7.1:扫描标题改名 + 原文件状态判定 + 还原前跳过
+    check("扫描标题已改为扫描网盘CAS", "扫描网盘CAS" in html
+          and "扫描网盘目录里的 .cas" not in html)
+    check("OpenList 扫描判定原文件状态", d is not None
+          and scan_by_name["a.cas"]["original_state"] == "existing"
+          and scan_by_name["a.cas"]["original_size"] == 123456
+          and scan_by_name["b.cas"]["original_state"] == "name_conflict"
+          and scan_by_name["b.cas"]["original_size"] == 999,
+          scan_by_name)
+    check("139 扫描判定原文件已存在",
+          scan139_item.get("original_state") == "existing"
+          and scan139_item.get("original_size") == 88188041773,
+          scan139_item)
+    helper = cas_web._scan_original_state
+    check("状态判定:同名同大小", helper({"name": "A.mkv", "size": 10},
+          [{"name": " a.mkv ", "size": 10, "is_dir": False}]) == ("existing", 10))
+    check("状态判定:同名异大小", helper({"name": "A.mkv", "size": 10},
+          [{"name": "A.mkv", "size": 9, "is_dir": False}]) == ("name_conflict", 9))
+    check("状态判定:无同名文件", helper({"name": "A.mkv", "size": 10},
+          [{"name": "B.mkv", "size": 10, "is_dir": False}]) == ("missing", None))
+    check("状态判定:目录不算原文件", helper({"name": "A.mkv", "size": 10},
+          [{"name": "A.mkv", "size": 10, "is_dir": True}]) == ("missing", None))
+    check("前端含状态刷新与跳过逻辑", all(x in html for x in
+          ["refreshScanState", "原文件已存在,已跳过", "同名文件大小不一致,已跳过",
+           "scanStateInfo", "全选可还原"]))
     check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
           and "/api/jobs/delete-source" in html)
     check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html
