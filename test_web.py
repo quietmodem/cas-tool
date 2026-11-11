@@ -49,6 +49,9 @@ class MockOL(BaseHTTPRequestHandler):
                            {"name": "移动云盘", "size": 0, "is_dir": True}]
             elif body.get("path") == "/天翼云盘":
                 content = [{"name": FNAME, "size": len(CONTENT), "is_dir": False}]
+            elif body.get("path") == "/移动云盘":
+                content = [{"name": "中转", "size": 0, "is_dir": True, "id": "CATID-999"},
+                           {"name": "备份", "size": 0, "is_dir": True, "id": "LISTID-555"}]
             elif body.get("path") == "/扫描":
                 content = [{"name": "a.cas", "size": len(SCAN_CAS), "is_dir": False},
                            {"name": "视频.mp4", "size": 99, "is_dir": False},
@@ -287,6 +290,20 @@ def main():
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "target": "/移动盘2"})
     check("挂载根目录用其 root_folder_id", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "ROOTCAT", d)
+
+    # r) 父目录列表取子项 id;设置里的文件夹 ID 对照最优先
+    st, d, _ = req("POST", base + "/api/restore139",
+                   {"cas_b64": sample_b64, "target": "/移动云盘/备份"})
+    check("父目录列表取子项 id", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "LISTID-555", d)
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"mobile_dir_ids_text": "/TV/移动云盘/中转 = FID-777\n坏行\n/另一目录,FID-888"})
+    check("文件夹ID对照保存", d["ok"], d)
+    st, d, _ = req("GET", base + "/api/settings")
+    txt = d["data"].get("mobile_dir_ids_text", "")
+    check("对照回显含两条", "FID-777" in txt and "FID-888" in txt and "坏行" not in txt, d)
+    st, d, _ = req("POST", base + "/api/restore139",
+                   {"cas_b64": sample_b64, "target": "/TV/移动云盘/中转"})
+    check("对照优先于自动解析", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "FID-777", d)
     hdrs, payload = captured["create139"][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")

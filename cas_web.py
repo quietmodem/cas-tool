@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.10.1"
+VERSION = "1.10.2"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -73,7 +73,7 @@ def ol_list(path, refresh=False):
     data = ol_post("/fs/list", {"path": path, "page": 1, "per_page": 0, "refresh": bool(refresh)})
     content = (data or {}).get("content") or []
     return [{"name": e.get("name", ""), "size": e.get("size", 0),
-             "is_dir": bool(e.get("is_dir"))} for e in content]
+             "is_dir": bool(e.get("is_dir")), "id": e.get("id", "")} for e in content]
 
 
 def ol_get(path):
@@ -98,21 +98,38 @@ def ol_storages():
 
 
 def resolve_139_parent(tdir):
-    """目标目录 -> 139 父目录 fileId。子目录用 fs/get 的 id;挂载根目录
-    fs/get 不给 id,改从存储列表取那个挂载的 root_folder_id(没设就是 /)。"""
+    """目标目录 -> 139 父目录 fileId。优先级:设置里的文件夹 ID 对照 >
+    fs/get 的 id > 父目录列表中该子项的 id > 挂载根目录的 root_folder_id。"""
+    mp = load_settings().get("mobile_dir_ids") or {}
+    if mp.get(tdir):
+        return mp[tdir], "(设置里的文件夹ID)"
     info = ol_get(tdir)
-    fid = str((info or {}).get("id") or (info or {}).get("fileId") or "").strip()
+    raw_id = (info or {}).get("id") or (info or {}).get("fileId") or ""
+    fid = str(raw_id).strip()
     if fid and fid != tdir:
         return fid, ""
+    parent_dir, _, name = tdir.rpartition("/")
+    parent_dir = parent_dir or "/"
+    try:
+        for e in ol_list(parent_dir, refresh=True) or []:
+            if e.get("name") == name:
+                fid2 = str(e.get("id") or "").strip()
+                if fid2 and fid2 != tdir:
+                    return fid2, ""
+                break
+    except Exception:  # noqa: BLE001
+        pass
     for st in ol_storages():
-        mp = str(st.get("mount_path") or "").rstrip("/")
-        if mp and mp == tdir.rstrip("/"):
+        mnt = str(st.get("mount_path") or "").rstrip("/")
+        if mnt and mnt == tdir.rstrip("/"):
             try:
                 add = json.loads(st.get("addition") or "{}")
             except ValueError:
                 add = {}
             return str(add.get("root_folder_id") or "").strip() or "/", "(挂载根目录)"
-    raise ValueError("目录 %s 没解析出移动 fileId(fs/get 无 id,且不是某个挂载的根目录)" % tdir)
+    raise ValueError("目录 %s 没解析出移动 fileId(fs/get 给的 id 是 %r)。"
+                     "可以在「设置」的移动文件夹 ID 对照里给这个目录填上 139 的文件夹 ID 再重试"
+                     % (tdir, raw_id))
 
 
 def ol_download_iter(path, info=None):
@@ -352,6 +369,9 @@ def load_settings():
     for k in PATH_KEYS:
         v = d.get(k) or []
         out[k] = [str(x).strip().rstrip("/") or "/" for x in v if str(x).strip()]
+    out["mobile_dir_ids"] = {str(k).rstrip("/") or "/": str(v).strip()
+                             for k, v in (d.get("mobile_dir_ids") or {}).items()
+                             if str(v).strip()}
     return out
 
 
@@ -447,6 +467,19 @@ def update_settings(body):
         cur["web_pw_hash"] = hash_password(pw)
     if body.get("clear_web_password"):
         cur["web_pw_hash"] = ""
+    if "mobile_dir_ids_text" in body:
+        mp = {}
+        for line in str(body.get("mobile_dir_ids_text") or "").splitlines():
+            line = line.strip()
+            idx = line.find("=")
+            if idx < 0:
+                idx = line.find(",")
+            if idx <= 0:
+                continue
+            pth, fid = line[:idx].strip(), line[idx + 1:].strip()
+            if pth.startswith("/") and fid:
+                mp[pth.rstrip("/") or "/"] = fid
+        cur["mobile_dir_ids"] = mp
     if (tok_in or ("openlist_url" in body and cur["openlist_url"] != old_url)) \
             and not body.get("clear_openlist_token"):
         base = cur["openlist_url"] or os.environ.get("OPENLIST_URL", "").strip()
@@ -462,6 +495,9 @@ def public_settings(s=None):
     s = s or load_settings()
     return {"tianyi_home": s["tianyi_home"], "mobile_home": s["mobile_home"],
             "tianyi_paths": s["tianyi_paths"], "mobile_paths": s["mobile_paths"],
+            "mobile_dir_ids_text": "\n".join(
+                "%s = %s" % (k, v)
+                for k, v in sorted((s.get("mobile_dir_ids") or {}).items())),
             "openlist_url": s["openlist_url"],
             "openlist_token_set": bool(s["openlist_token"]
                                        or os.environ.get("OPENLIST_TOKEN")),
@@ -915,6 +951,9 @@ button:disabled{opacity:.35}
 <label class="mut">移动云盘路径(可多个,一行一个)</label>
 <textarea id="paths139" placeholder="/TV/移动云盘&#10;/移动云盘"></textarea>
 <button class="small grey" onclick="togglePicker('append:paths139')">📁 添加一个目录</button>
+<label class="mut">移动文件夹 ID 对照(直调还原落目录用,一行一个)</label>
+<textarea id="dirids139" placeholder="/TV/移动云盘/中转 = 文件夹ID"></textarea>
+<div class="mut">填了对照的目录,直调还原直接按 ID 落,不再靠自动解析。ID 获取:电脑登录 yun.139.com 进到那个文件夹,F12 → 网络 → 找 file/list 请求,看请求里的 parentFileId。</div>
 <div class="mut">校验规则:天翼 cas 还到不属于天翼的目录、移动 cas 还到不属于移动的目录,还原前会弹窗提醒(主目录自动算作本云路径,不用重复填)。清单留空 = 不校验。</div>
 <button onclick="saveSettings()">保存设置</button>
 <div id="setmsg" class="msg"></div>
@@ -1033,6 +1072,7 @@ async function loadSettings(){
   $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
   $('paths189').value=(SETTINGS.tianyi_paths||[]).join('\n');
   $('paths139').value=(SETTINGS.mobile_paths||[]).join('\n');
+  $('dirids139').value=SETTINGS.mobile_dir_ids_text||'';
   $('cfgtoken').value = SETTINGS.openlist_token_set? MASK : '';
   $('cfgauth').value = SETTINGS.cas139_auth_set? MASK : '';
   $('cfgpw').value = SETTINGS.web_password_set? MASK : '';
@@ -1044,6 +1084,7 @@ async function saveSettings(){
   const body={tianyi_home:$('home189').value.trim(), mobile_home:$('home139').value.trim(),
     tianyi_paths:$('paths189').value.split('\n').map(s=>s.trim()).filter(Boolean),
     mobile_paths:$('paths139').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    mobile_dir_ids_text:$('dirids139').value,
     openlist_url:$('cfgurl').value.trim(), openlist_token:secVal('cfgtoken'),
     cas139_phone:$('cfgphone').value.trim(), cas139_auth:secVal('cfgauth'),
     web_password:secValRaw('cfgpw'), clear_web_password:$('cfgpwclear').checked,
