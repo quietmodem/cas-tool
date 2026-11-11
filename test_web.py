@@ -116,13 +116,55 @@ class MockOL(BaseHTTPRequestHandler):
         self.end_headers()
 
 
+M139_FILE = "139测试.mkv"
+
+
 class Mock139(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def do_GET(self):
+        if self.path == "/raw139":
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(CONTENT)))
+            self.end_headers()
+            self.wfile.write(CONTENT)
+            return
+        self.send_response(404)
+        self.end_headers()
+
     def do_POST(self):
         ln = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(ln)
+        if self.path == "/hcy/file/list":
+            body = json.loads(raw)
+            parent = body.get("parentFileId") or "/"
+            if parent == "/":
+                items = [{"fileId": "D1", "name": "视频", "size": 0, "type": "folder"},
+                         {"fileId": "F139", "name": M139_FILE, "size": len(CONTENT),
+                          "type": "file"}]
+            elif parent == "D1":
+                items = [{"fileId": "F139B", "name": "子文件.mkv",
+                          "size": len(CONTENT), "type": "file"}]
+            else:
+                items = []
+            data = json.dumps({"code": "0000", "data": {"items": items,
+                                                        "nextPageCursor": ""}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if self.path == "/hcy/file/getDownloadUrl":
+            url = "http://127.0.0.1:%d/raw139" % self.server.server_address[1]
+            data = json.dumps({"code": "0000", "data": {"url": url}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path == "/hcy/file/create":
             captured["create139"].append((dict(self.headers), json.loads(raw)))
             data = json.dumps({"code": "0000", "data": {"fileId": "F123", "exist": True}}).encode()
@@ -184,6 +226,8 @@ def main():
         "name": "扫描到的影片.mkv", "size": 123456, "md5": "", "sliceMd5": "",
         "sha256": "b" * 64, "recover_pass": "", "create_time": "1794055893"})
     ct.FILE_CREATE_URL = "http://127.0.0.1:%d/hcy/file/create" % mock_139.server_address[1]
+    ct.FILE_LIST_URL = "http://127.0.0.1:%d/hcy/file/list" % mock_139.server_address[1]
+    ct.FILE_DOWNLOAD_URL = "http://127.0.0.1:%d/hcy/file/getDownloadUrl" % mock_139.server_address[1]
 
     web = ThreadingHTTPServer(("127.0.0.1", 0), cas_web.Handler)
     threading.Thread(target=web.serve_forever, daemon=True).start()
@@ -304,6 +348,30 @@ def main():
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "target": "/TV/移动云盘/中转"})
     check("对照优先于自动解析", d["ok"] and captured["create139"][-1][1]["parentFileId"] == "FID-777", d)
+
+    # s) 移动直连:列表 / 生成 / 状态探针
+    st, d, _ = req("POST", base + "/api/m139/list", {"parent": "/"})
+    names = [e["name"] for e in d["data"]["items"]] if d["ok"] else []
+    check("139 直连列表", d["ok"] and "视频" in names and M139_FILE in names, d)
+    fid139 = [e["id"] for e in d["data"]["items"] if e["name"] == M139_FILE][0]
+    st, d, _ = req("GET", base + "/api/status")
+    check("状态含移动直连已连通", d["ok"] and d["data"].get("m139_ok") is True, d)
+    st, d, _ = req("POST", base + "/api/m139/gen",
+                   {"file_id": fid139, "name": M139_FILE, "size": len(CONTENT)})
+    check("139 直连生成任务已建", d["ok"] and d["data"]["job_id"], d)
+    jid = d["data"]["job_id"]
+    job = None
+    for _ in range(60):
+        st, d, _ = req("GET", base + "/api/jobs")
+        job = [j for j in d["data"] if j["id"] == jid][0]
+        if job["status"] != "running":
+            break
+        time.sleep(0.5)
+    check("139 直连生成完成", job and job["status"] == "done", job)
+    obj = ct.decode_cas_bytes(base64.b64decode(job["result"]["cas_b64"]))
+    check("139 直连生成哈希正确",
+          obj["md5"] == exp_md5 and obj["sha256"] == exp_sha and obj["sliceMd5"] == exp_slice,
+          obj)
     hdrs, payload = captured["create139"][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")

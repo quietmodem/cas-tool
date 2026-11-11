@@ -296,6 +296,8 @@ def cmd_verify(args):
 
 PERSONAL_HOST = "https://personal-kd-njs.yun.139.com/hcy"
 FILE_CREATE_URL = PERSONAL_HOST + "/file/create"
+FILE_LIST_URL = PERSONAL_HOST + "/file/list"
+FILE_DOWNLOAD_URL = PERSONAL_HOST + "/file/getDownloadUrl"
 RECYCLE_TRASH_URL = PERSONAL_HOST + "/recyclebin/batchTrash"
 X_DEVICE_INFO = "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||"
 X_YUN_CLIENT_INFO = "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||dW5kZWZpbmVk||"
@@ -380,6 +382,53 @@ def personal_post(basic: str, url: str, payload: dict):
             return resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "replace")
+
+
+def personal_call(basic: str, url: str, payload: dict):
+    """调一个 hcy 接口并校验业务码,返回 data(形状同 OpenList 139 驱动)。"""
+    st, txt = personal_post(basic, url, payload)
+    if st != 200:
+        raise RuntimeError("139 接口 HTTP %s: %s" % (st, txt[:200]))
+    try:
+        resp = json.loads(txt)
+    except ValueError:
+        raise RuntimeError("139 接口返回非 JSON: %s" % txt[:200])
+    if str(resp.get("code")) not in ("0000", "0"):
+        raise RuntimeError("139 接口失败 code=%s: %s"
+                           % (resp.get("code"), resp.get("message") or txt[:200]))
+    return resp.get("data") or {}
+
+
+def list_139_files(basic: str, parent: str = "/"):
+    """列一个 139 文件夹的全部条目(游标翻页),返回 [{id, name, size, is_dir}]。"""
+    out = []
+    cursor = ""
+    while True:
+        data = personal_call(basic, FILE_LIST_URL, {
+            "imageThumbnailStyleList": ["Small", "Large"],
+            "orderBy": "updated_at", "orderDirection": "DESC",
+            "pageInfo": {"pageCursor": cursor, "pageSize": 100},
+            "parentFileId": parent or "/"})
+        for it in data.get("items") or data.get("list") or []:
+            out.append({"id": it.get("fileId") or it.get("file_id") or "",
+                        "name": it.get("name") or "",
+                        "size": it.get("size") or 0,
+                        "is_dir": it.get("type") == "folder"})
+        cursor = data.get("nextPageCursor") or ""
+        if not cursor:
+            return out
+
+
+def download_url_139(basic: str, file_id: str):
+    """取 139 文件下载直链(cdnUrl 优先,同 OpenList 驱动的取法)。"""
+    data = personal_call(basic, FILE_DOWNLOAD_URL, {"fileId": file_id})
+    cdn = data.get("cdnUrl") or ""
+    if cdn and data.get("cdnSwitch"):
+        return cdn
+    url = data.get("url") or ""
+    if not url:
+        raise RuntimeError("139 未返回下载链接")
+    return url
 
 
 def build_139_part_infos(size: int, part_size: int = 100 * MIB):

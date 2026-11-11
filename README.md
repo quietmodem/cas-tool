@@ -148,7 +148,16 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v1.10.2(2026-11-11)。Web v1.10.2:移动直调目录解析
+版本: CLI v1.0.0 / Web v2.0.0(2026-11-11)。Web v2.0.0:双云直连阶段一——
+移动云盘全直连(不再经 OpenList):生成页可切换「OpenList 网盘 / 移动云盘
+(直连)」,直连模式经 139 的 file/list 浏览(条目自带 fileId)、
+file/getDownloadUrl 取直链流式生成 cas;还原页新增「从移动云盘选目录
+(直连)」弹窗,按文件夹 ID 选还原落点,彻底绕开 OpenList 路径换算;顶部
+状态新增移动直连连通探针(AUTH 失效会直接标红)。接口形状对齐 OpenList
+139 驱动源码(personalGetFiles/personalGetLink)。已知限制:直连生成的
+cas 暂不支持自动旁存到视频旁(在任务里下载),还原旁存不受影响。
+阶段二(天翼 189 直连)后续版本跟进。
+Web v1.10.2:移动直调目录解析
 再加两层——设置里新增「移动文件夹 ID 对照」(一行 `目录 = fileId`,直调还原
 最优先按对照落目录,ID 从 yun.139.com 的 file/list 请求 parentFileId 取);
 自动解析新增"父目录列表取子项 id"(顺带修 ol_list 此前把条目 id 丢弃的

@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.10.2"
+VERSION = "2.0.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -196,11 +196,12 @@ def job_update(jid, **kw):
             JOBS[jid].update(kw)
 
 
-def run_gen_job(jid, ol_path, size, upload_back):
-    """从 OpenList 流式读取文件,一遍算完 md5/逐片 md5/sha256,生成双填 .cas。"""
+def _run_gen(jid, size, opener, name, uploader):
+    """流式读取一遍算完 md5/逐片 md5/sha256,生成双填 .cas。
+    opener() 返回可 read 的响应;uploader(cas_bytes) 可选,返回上传到的位置。"""
     try:
-        job_update(jid, message="连接 OpenList ...")
-        resp = ol_download_iter(ol_path)
+        job_update(jid, message="连接数据源 ...")
+        resp = opener()
         slice_size = ct.cas_slice_size(size)
         whole_md5 = hashlib.md5()
         whole_sha = hashlib.sha256()
@@ -230,7 +231,6 @@ def run_gen_job(jid, ol_path, size, upload_back):
         if done != size:
             raise RuntimeError("读到的字节数 %d 与文件大小 %d 不符,已中止(文件可能在变动)" % (done, size))
         file_md5 = whole_md5.hexdigest().upper()
-        name = ol_path.rstrip("/").split("/")[-1]
         cas_obj = {
             "name": name,
             "size": size,
@@ -243,18 +243,44 @@ def run_gen_job(jid, ol_path, size, upload_back):
         cas_bytes = ct.encode_cas(cas_obj)
         result = {"name": name, "size": size,
                   "cas_b64": base64.b64encode(cas_bytes).decode()}
-        if upload_back:
-            job_update(jid, message="上传 .cas 回网盘同目录 ...")
-            ol_put(ol_path + ".cas", cas_bytes)
-            result["uploaded_to"] = ol_path + ".cas"
+        if uploader:
+            job_update(jid, message="上传 .cas 回同目录 ...")
+            result["uploaded_to"] = uploader(cas_bytes)
         job_update(jid, status="done", progress=100, message="完成", result=result)
     except Exception as e:  # noqa: BLE001
         job_update(jid, status="error", message=str(e)[:300])
 
 
+def run_gen_job(jid, ol_path, size, upload_back):
+    name = ol_path.rstrip("/").split("/")[-1]
+    up = None
+    if upload_back:
+        def up(cas_bytes):
+            ol_put(ol_path + ".cas", cas_bytes)
+            return ol_path + ".cas"
+    _run_gen(jid, size, lambda: ol_download_iter(ol_path), name, up)
+
+
+def run_gen_job139(jid, file_id, name, size):
+    _run_gen(jid, size, lambda: m139_download_iter(file_id), name, None)
+
+
 # ---------------------------------------------------------------------------
 # 还原(与 cas_tool CLI 同逻辑,输入为 cas 字节)
 # ---------------------------------------------------------------------------
+
+def m139_basic():
+    phone, auth = m139_creds()
+    if not phone or not auth:
+        raise RuntimeError("未配置移动凭据(设置页填手机号 + AUTH)")
+    return ct.build_basic_auth(phone, auth)
+
+
+def m139_download_iter(file_id):
+    url = ct.download_url_139(m139_basic(), file_id)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    return urllib.request.urlopen(req, timeout=120)
+
 
 def restore_139(cas_bytes, parent="/"):
     obj = ct.decode_cas_bytes(cas_bytes)
@@ -671,6 +697,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.ok({"found": found})
             if path == "/api/sidecar":
                 return self.api_sidecar(body)
+            if path == "/api/m139/list":
+                try:
+                    items = ct.list_139_files(m139_basic(), body.get("parent") or "/")
+                    return self.ok({"items": items})
+                except Exception as e:  # noqa: BLE001
+                    return self.fail(str(e))
+            if path == "/api/m139/gen":
+                fid = body.get("file_id") or ""
+                gname = body.get("name") or ""
+                gsize = int(body.get("size") or 0)
+                if not fid or gsize <= 0:
+                    return self.fail("缺少 file_id / size")
+                jid = job_new("gen139", "生成 cas(移动直连): " + gname)
+                threading.Thread(target=run_gen_job139,
+                                 args=(jid, fid, gname, gsize), daemon=True).start()
+                return self.ok({"job_id": jid})
             if path == "/api/gen":
                 return self.api_gen(body)
             if path == "/api/restore139":
@@ -719,6 +761,15 @@ class Handler(BaseHTTPRequestHandler):
                 status["openlist_msg"] = "已连通 " + base
             except Exception as e:  # noqa: BLE001
                 status["openlist_msg"] = str(e)[:200]
+        status["m139_ok"] = False
+        status["m139_msg"] = ""
+        if status["m139_configured"]:
+            try:
+                ct.list_139_files(m139_basic(), "/")
+                status["m139_ok"] = True
+                status["m139_msg"] = "移动直连已连通"
+            except Exception as e:  # noqa: BLE001
+                status["m139_msg"] = str(e)[:200]
         return self.ok(status)
 
     def api_list(self, qs):
@@ -867,6 +918,13 @@ button:disabled{opacity:.35}
 <button class="small grey" onclick="pickerHome('139')">移动主目录</button></div>
 <div id="pickerlist"></div>
 </div></div>
+<div id="m139pick" class="overlay" style="display:none" onclick="if(event.target===this)close139Pick()"><div class="sheet">
+<div class="row"><b class="grow">📁 移动云盘选目录(直连)</b>
+<button class="small green" onclick="confirm139Pick()">✔ 选当前目录</button>
+<button class="small grey" onclick="close139Pick()">关闭</button></div>
+<div id="m139pickcrumbs" class="crumbs"></div>
+<div id="m139picklist"></div>
+</div></div>
 
 <div id="tab-restore">
 <div class="card"><h2>还原 .cas</h2>
@@ -881,6 +939,7 @@ button:disabled{opacity:.35}
 <div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼主目录</button>
 <button class="small grey" onclick="fillHome('139')">填入移动主目录</button></div>
 <input id="parent139" value="" placeholder="移动直调父目录 fileId(高级,一般留空;留空按上方目标目录还原)">
+<div class="row"><button class="small grey" onclick="open139Pick()">📁 从移动云盘选目录(直连)</button><span id="pick139label" class="mut"></span></div>
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,把 .cas 也存到目标目录(视频旁边)</label>
 <button class="green" id="btnTy" onclick="doRestore('tianyi')">还原到天翼云盘</button>
 <button class="green" id="btnMb" onclick="doRestore('mobile')">还原到移动云盘</button>
@@ -907,7 +966,9 @@ button:disabled{opacity:.35}
 </div>
 
 <div id="tab-gen" style="display:none">
-<div class="card"><h2>浏览网盘 · 生成 .cas</h2>
+<div class="row"><button class="small grey" id="srcOl" onclick="setBrowseSrc('ol')">🌐 OpenList 网盘</button>
+<button class="small grey" id="src139" onclick="setBrowseSrc('139')">📱 移动云盘(直连)</button></div>
+<div class="card" id="olbrowse"><h2>浏览网盘 · 生成 .cas</h2>
 <div class="row"><button class="small grey" onclick="goUp()">⬆ 上级</button>
 <span class="grow" id="curpath">/</span>
 <button class="small grey" onclick="loadList()">刷新</button></div>
@@ -915,6 +976,12 @@ button:disabled{opacity:.35}
 <button class="small grey" onclick="goHome('139')">跳到移动主目录</button></div>
 <label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后把 .cas 上传回同目录(视频旁边,推荐)</label>
 <div id="entries"></div></div>
+<div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 .cas</h2>
+<div class="row"><button class="small grey" onclick="m139Up(0)">🏠 根目录</button>
+<span class="grow" id="m139crumbs">移动云盘</span>
+<button class="small grey" onclick="loadM139()">刷新</button></div>
+<div class="mut">直连 139 接口浏览,不经 OpenList;生成的 .cas 在下方任务里下载(旁存功能直连模式暂不支持)。</div>
+<div id="m139entries"></div></div>
 
 <div class="card"><h2>任务</h2><div id="jobs" class="mut">暂无</div></div>
 </div>
@@ -977,7 +1044,7 @@ async function status(){
   const s=d.data; $('ver').textContent='v'+s.version;
   $('status').innerHTML =
     (s.openlist_configured? (s.openlist_ok? '🟢 OpenList '+esc(s.openlist_msg) : '🔴 OpenList 未连通: '+esc(s.openlist_msg)) : '🔴 未配置 OPENLIST_URL / OPENLIST_TOKEN')
-    +'<br>'+(s.m139_configured? '🟢 移动直调接口已配置凭据' : '🟡 未配置移动凭据(设置页可填;移动直调还原不可用,天翼不受影响)');
+    +'<br>'+(s.m139_configured? (s.m139_ok? '🟢 移动直连已连通' : '🔴 移动直连未通: '+esc(s.m139_msg||'')) : '🟡 未配置移动凭据(设置页可填;移动还原不可用,天翼不受影响)');
 }
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();
   r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file);});}
@@ -1244,6 +1311,54 @@ async function doRestore(to){
   const r = await restoreCore(to, batchItems, setSt);
   if(!r){ $('restoremsg').innerHTML='已取消还原'; return; }
   $('restoremsg').innerHTML='批量还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标目录: '+esc(r.target)+')';
+}
+let browseSrc='ol';
+let m139Stack=[{id:'/',name:'移动云盘'}], m139Items=[];
+function setBrowseSrc(s){
+  browseSrc=s;
+  $('olbrowse').style.display = s==='ol'? '' : 'none';
+  $('m139browse').style.display = s==='139'? '' : 'none';
+  if(s==='139') loadM139();
+}
+async function loadM139(){
+  const cur=m139Stack[m139Stack.length-1];
+  $('m139crumbs').textContent = m139Stack.map(c=>c.name).join(' / ');
+  $('m139entries').innerHTML='<span class=mut>加载中...</span>';
+  const d = await api('/api/m139/list',{parent:cur.id});
+  if(!d.ok){ $('m139entries').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
+  m139Items=d.data.items;
+  $('m139entries').innerHTML = m139Items.map((e,i)=> e.is_dir
+    ? '<div class=row><span class=grow>📁 '+esc(e.name)+'</span><button class="small grey" onclick="m139Down('+i+')">打开</button></div>'
+    : '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span><button class="small green" onclick="genCas139('+i+')">生成 cas</button></div>'
+  ).join('') || '<span class=mut>(空文件夹)</span>';
+}
+function m139Down(i){ const e=m139Items[i]; m139Stack.push({id:e.id,name:e.name}); loadM139(); }
+function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); loadM139(); }
+async function genCas139(i){
+  const e=m139Items[i];
+  const d = await api('/api/m139/gen',{file_id:e.id,name:e.name,size:e.size});
+  if(d.ok){ alert('已开始生成,看下方任务进度'); loadJobs(); } else alert(d.msg);
+}
+let pick139Stack=[{id:'/',name:'移动云盘'}], pick139Items=[];
+function open139Pick(){ pick139Stack=[{id:'/',name:'移动云盘'}]; $('m139pick').style.display='flex'; load139Pick(); }
+function close139Pick(){ $('m139pick').style.display='none'; }
+async function load139Pick(){
+  const cur=pick139Stack[pick139Stack.length-1];
+  $('m139pickcrumbs').textContent = pick139Stack.map(c=>c.name).join(' / ');
+  $('m139picklist').innerHTML='<span class=mut>加载中...</span>';
+  const d = await api('/api/m139/list',{parent:cur.id});
+  if(!d.ok){ $('m139picklist').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
+  pick139Items=d.data.items.filter(e=>e.is_dir);
+  $('m139picklist').innerHTML = (pick139Stack.length>1? '<div class=row><button class="small grey" onclick="pick139Up()">⬆ 上一级</button></div>' : '')
+    + (pick139Items.map((e,i)=>'<div class=row><span class=grow>📁 '+esc(e.name)+'</span><button class="small grey" onclick="pick139Down('+i+')">打开</button></div>').join('') || '<span class=mut>(没有子文件夹,就选当前目录)</span>');
+}
+function pick139Down(i){ const e=pick139Items[i]; pick139Stack.push({id:e.id,name:e.name}); load139Pick(); }
+function pick139Up(){ pick139Stack.pop(); load139Pick(); }
+function confirm139Pick(){
+  const cur=pick139Stack[pick139Stack.length-1];
+  $('parent139').value = cur.id;
+  $('pick139label').textContent = '已选:'+pick139Stack.map(c=>c.name).join('/');
+  close139Pick();
 }
 async function loadList(){
   const d = await api('/api/list?path='+encodeURIComponent(curPath));
