@@ -42,6 +42,8 @@ class MockOL(BaseHTTPRequestHandler):
         ln = int(self.headers.get("Content-Length", "0") or "0")
         body = json.loads(self.rfile.read(ln) or b"{}")
         if self.path == "/api/fs/list":
+            if self.headers.get("Authorization") == "bad-token":
+                return self._json({"code": 401, "message": "token is invalidated"})
             if body.get("path") == "/":
                 content = [{"name": "天翼云盘", "size": 0, "is_dir": True},
                            {"name": "移动云盘", "size": 0, "is_dir": True}]
@@ -357,6 +359,15 @@ def main():
     check("可清除后台口令", d["ok"] and d["data"]["web_password_set"] is False, d)
     st, d, _ = req("GET", base + "/api/status")
     check("清除口令后恢复免登录", st == 200 and d["ok"], d)
+
+    # o) Token 保存前校验:坏 token 不落盘、Bearer 前缀自动剥离
+    st, d, _ = req("POST", base + "/api/settings", {"openlist_token": "bad-token"})
+    check("无效 token 被保存校验拒绝", not d["ok"] and "token is invalidated" in d["msg"], d)
+    st, d, _ = req("GET", base + "/api/settings")
+    check("拒绝后旧 token 仍在生效", d["ok"] and d["data"]["openlist_token_set"] is True
+          and d["data"]["openlist_token_source"] == "页面设置", d)
+    st, d, _ = req("POST", base + "/api/settings", {"openlist_token": "Bearer settings-token-xyz"})
+    check("粘贴带 Bearer 前缀可自动剥离", d["ok"], d)
 
     # i) 口令保护
     cas_web.WEB_PASSWORD = "pw123"

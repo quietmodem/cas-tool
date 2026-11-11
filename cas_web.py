@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -351,9 +351,23 @@ def verify_password(pw):
     return bool(h) and check_stored_password(pw, h)
 
 
+def probe_openlist(base, token):
+    """保存前实测一组 OpenList 地址+Token,不通就报错,避免把坏 token 存进去。"""
+    st, txt = ct.openlist_post(base.rstrip("/"), token, "/fs/list",
+                               {"path": "/", "page": 1, "per_page": 0})
+    try:
+        resp = json.loads(txt)
+    except ValueError:
+        raise ValueError("OpenList 地址 %s 返回异常(HTTP %s),本次配置未保存" % (base, st))
+    if resp.get("code") != 200:
+        raise ValueError("OpenList 校验失败:%s —— 这组地址/Token 未保存,请核对后重新粘贴"
+                         % (resp.get("message") or txt[:120]))
+
+
 def update_settings(body):
     """设置页提交:密钥类字段留空 = 不改;clear_* 为真 = 清除该项。"""
     cur = load_settings()
+    old_url = cur["openlist_url"]
     for k in ("tianyi_home", "mobile_home"):
         if k in body:
             v = str(body.get(k) or "").strip()
@@ -380,10 +394,14 @@ def update_settings(body):
         cur["openlist_url"] = str(body.get("openlist_url") or "").strip().rstrip("/")
     if "cas139_phone" in body:
         cur["cas139_phone"] = str(body.get("cas139_phone") or "").strip()
-    for k in ("openlist_token", "cas139_auth"):
-        v = str(body.get(k) or "").strip()
-        if v:
-            cur[k] = v
+    tok_in = str(body.get("openlist_token") or "").strip()
+    if tok_in.lower().startswith("bearer "):
+        tok_in = tok_in[7:].strip()
+    if tok_in:
+        cur["openlist_token"] = tok_in
+    auth_in = str(body.get("cas139_auth") or "").strip()
+    if auth_in:
+        cur["cas139_auth"] = auth_in
     if body.get("clear_openlist_token"):
         cur["openlist_token"] = ""
     if body.get("clear_cas139_auth"):
@@ -393,6 +411,12 @@ def update_settings(body):
         cur["web_pw_hash"] = hash_password(pw)
     if body.get("clear_web_password"):
         cur["web_pw_hash"] = ""
+    if (tok_in or ("openlist_url" in body and cur["openlist_url"] != old_url)) \
+            and not body.get("clear_openlist_token"):
+        base = cur["openlist_url"] or os.environ.get("OPENLIST_URL", "").strip()
+        token = cur["openlist_token"] or os.environ.get("OPENLIST_TOKEN", "").strip()
+        if base and token:
+            probe_openlist(base, token)
     store_settings(cur)
     return public_settings(cur)
 
@@ -405,6 +429,8 @@ def public_settings(s=None):
             "openlist_url": s["openlist_url"],
             "openlist_token_set": bool(s["openlist_token"]
                                        or os.environ.get("OPENLIST_TOKEN")),
+            "openlist_token_source": ("页面设置" if s["openlist_token"] else
+                                      ("环境变量" if os.environ.get("OPENLIST_TOKEN") else "")),
             "cas139_phone": s["cas139_phone"],
             "cas139_auth_set": bool(s["cas139_auth"]
                                     or ct.get_139_credentials()[1]),
@@ -813,12 +839,15 @@ textarea{min-height:64px}
 <input id="cfgurl" placeholder="如 http://192.168.111.2:5244">
 <label class="mut">OpenList Token <span id="tokstate" class="kv"></span></label>
 <input id="cfgtoken" type="password" placeholder="粘贴 OpenList 后台的令牌">
+<div class="mut">填 OpenList 后台「设置 → 其他 → 令牌」里的长期令牌;浏览器 F12 里抓的登录 token 是临时的,会过期失效。保存时工具会先实测这组地址+Token,不通不会存。</div>
+<label class="mut"><input type="checkbox" id="cfgtokclear" style="width:auto"> 清除页面里存的 Token(改回用 compose 环境变量里的)</label>
 <label class="mut">移动云盘手机号(移动直调还原用,可不填)</label>
 <input id="cfgphone" placeholder="手机号">
 <label class="mut">移动 AUTH <span id="authstate" class="kv"></span></label>
 <input id="cfgauth" type="password" placeholder="形如 Basic xxxxx,留空 = 不修改">
 <label class="mut">页面访问口令 <span id="pwstate" class="kv"></span></label>
 <input id="cfgpw" type="password" placeholder="留空 = 不修改">
+<label class="mut"><input type="checkbox" id="cfgauthclear" style="width:auto"> 清除页面里存的移动 AUTH</label>
 <label class="mut"><input type="checkbox" id="cfgpwclear" style="width:auto"> 清除访问口令(打开页面不再要口令)</label>
 </div>
 <div class="card"><h2>主目录设置</h2>
@@ -946,7 +975,7 @@ async function loadSettings(){
   $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
   $('paths189').value=(SETTINGS.tianyi_paths||[]).join('\n');
   $('paths139').value=(SETTINGS.mobile_paths||[]).join('\n');
-  $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置)' : '(未设置)';
+  $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置'+(SETTINGS.openlist_token_source? ' · 来自'+SETTINGS.openlist_token_source : '')+')' : '(未设置)';
   $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置)' : '(未设置)';
   $('pwstate').textContent = SETTINGS.web_password_set? '(已设置)' : '(未设置)';
 }
@@ -956,10 +985,11 @@ async function saveSettings(){
     mobile_paths:$('paths139').value.split('\n').map(s=>s.trim()).filter(Boolean),
     openlist_url:$('cfgurl').value.trim(), openlist_token:$('cfgtoken').value.trim(),
     cas139_phone:$('cfgphone').value.trim(), cas139_auth:$('cfgauth').value.trim(),
-    web_password:$('cfgpw').value, clear_web_password:$('cfgpwclear').checked};
+    web_password:$('cfgpw').value, clear_web_password:$('cfgpwclear').checked,
+    clear_openlist_token:$('cfgtokclear').checked, clear_cas139_auth:$('cfgauthclear').checked};
   const d = await api('/api/settings', body);
   $('setmsg').innerHTML = d.ok? '<span class=good>已保存</span>' : '<span class=err>'+esc(d.msg)+'</span>';
-  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; loadSettings(); status(); }
+  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; $('cfgtokclear').checked=false; $('cfgauthclear').checked=false; loadSettings(); status(); }
 }
 function fillHome(which){
   const v = which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home;
