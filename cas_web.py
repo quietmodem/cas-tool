@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.5.5"
+VERSION = "2.6.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -447,7 +447,8 @@ SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
                  "cas139_phone", "cas139_auth", "web_pw_hash",
                  "cas139_user", "cas139_pass", "cas139_mail_cookies",
                  "cas139_sms_code", "cas139_udid",
-                 "mobile_home_id", "mobile_home_name", "tianyi_access")
+                 "mobile_home_id", "mobile_home_name", "tianyi_access",
+                 "tianyi_session_key")
 PATH_KEYS = ("tianyi_paths", "mobile_paths")
 
 
@@ -554,6 +555,11 @@ def update_settings(body):
     auth_in = str(body.get("cas139_auth") or "").strip()
     if auth_in:
         cur["cas139_auth"] = auth_in
+    sk_in = str(body.get("tianyi_session_key") or "").strip()
+    if sk_in:
+        cur["tianyi_session_key"] = sk_in
+    if body.get("clear_tianyi_session_key"):
+        cur["tianyi_session_key"] = ""
     if "cas139_user" in body:
         cur["cas139_user"] = str(body.get("cas139_user") or "").strip()
     if "tianyi_access" in body:
@@ -654,7 +660,8 @@ def public_settings(s=None):
                 for d in (s.get("mobile_dirs") or [])),
             "mobile_home_id": s["mobile_home_id"],
             "mobile_home_name": s["mobile_home_name"],
-            "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD)}
+            "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD),
+            "tianyi_session_key_set": bool(s["tianyi_session_key"])}
 
 
 def effective_openlist():
@@ -786,6 +793,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail("未登录", status=401)
         try:
             body = self.read_json()
+            if path == "/api/check189":
+                try:
+                    cas_bytes = base64.b64decode(body.get("cas_b64", ""))
+                    meta = ct.decode_cas_bytes(cas_bytes)
+                    sk = load_settings()["tianyi_session_key"]
+                    return self.ok(ct.check_189_cas(sk, meta))
+                except Exception as e:  # noqa: BLE001
+                    return self.fail(str(e))
             if path == "/api/inspect":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
                 return self.ok(cas_summary(cas_bytes))
@@ -1201,6 +1216,10 @@ button:disabled{opacity:.35}
 <input id="cfgtoken" type="password" placeholder="粘贴 OpenList 后台的令牌">
 <div class="mut">填 OpenList 后台「设置 → 其他 → 令牌」里的长期令牌(F12 抓的会过期)。保存时先实测连通,不通不存。</div>
 <label class="mut"><input type="checkbox" id="cfgtokclear" style="width:auto"> 清除页面里存的 Token(改回用 compose 环境变量里的)</label>
+<label class="mut">SessionKey(网页版)<span id="skstate" class="kv"></span></label>
+<input id="cfgsk189" type="password" placeholder="只用于「天翼检测」,与 OpenList 还原无关">
+<div class="mut">获取:电脑浏览器登录 cloud.189.cn,按 F12 打开控制台,输入 sessionStorage.getItem('sessionKey') 回车,复制结果填入。会过期,失效重新获取。</div>
+<label class="mut"><input type="checkbox" id="cfgskclear" style="width:auto"> 清除已存的 SessionKey</label>
 <label class="mut">挂载目录(天翼云盘在 OpenList 里的目录)</label>
 <div class="row"><input id="home189" class="grow" placeholder="如 /TV/天翼云盘在线">
 <button class="small grey" onclick="togglePicker('home189')">📁 选目录</button></div>
@@ -1303,6 +1322,15 @@ function clearRestore(){
   $('restorebox').style.display='none';
   refreshBtns();
 }
+async function check189Item(i){
+  const el=$('ck'+i); if(el) el.innerHTML='<span class=mut>检测中…</span>';
+  const d = await api('/api/check189',{cas_b64:batchItems[i].b64});
+  if(!el) return;
+  if(!d.ok){ el.innerHTML='<span class=err>⚠ '+esc(d.msg)+'</span>'; return; }
+  if(d.data.state==='ok') el.innerHTML='<span class=good>✅ '+esc(d.data.msg)+'</span>';
+  else if(d.data.state==='missing') el.innerHTML='<span class=err>✗ '+esc(d.data.msg)+'</span>';
+  else el.innerHTML='<span class=err>⚠ '+esc(d.data.msg)+'</span>';
+}
 function batchAll(v){ document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); refreshBtns(); }
 function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); }
 function renderBatch(){
@@ -1310,7 +1338,8 @@ function renderBatch(){
   $('inspect').innerHTML = head + batchItems.map((it,i)=>
     it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
       (it.src? '<br><span class=kv>来源: '+esc(it.src)+'</span>':'')+
-      '<br><span class=kv>md5: '+esc(it.info.md5||'(空)')+' · sliceMd5: '+esc(it.info.sliceMd5||'(空)')+' · sha256: '+esc(it.info.sha256||'(空)')+'</span></div>'
+      '<br><span class=kv>md5: '+esc(it.info.md5||'(空)')+' · sliceMd5: '+esc(it.info.sliceMd5||'(空)')+' · sha256: '+esc(it.info.sha256||'(空)')+'</span>'
+      +(it.info.md5? '<br><button class="small grey" onclick="check189Item('+i+')">🔍 天翼检测</button> <span id="ck'+i+'"></span>' : '')+'</div>'
            : '<div>📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
   ).join('');
 }
@@ -1396,6 +1425,8 @@ async function loadSettings(){
   $('paths189').value=(SETTINGS.tianyi_paths||[]).join('\n');
   $('dirs139').value=SETTINGS.mobile_dirs_text||'';
   $('cfgtoken').value = SETTINGS.openlist_token_set? MASK : '';
+  $('cfgsk189').value = SETTINGS.tianyi_session_key_set? MASK : '';
+  $('skstate').textContent = SETTINGS.tianyi_session_key_set? '(已设置)' : '(未设置)';
   $('cfgauth').value = SETTINGS.cas139_auth_set? MASK : '';
   $('cfguser').value=SETTINGS.cas139_user||'';
   $('cfgpass139').value = SETTINGS.cas139_pass_set? MASK : '';
@@ -1415,6 +1446,8 @@ async function saveSettings(){
     tianyi_paths:$('paths189').value.split('\n').map(s=>s.trim()).filter(Boolean),
     mobile_dirs_text:$('dirs139').value,
     openlist_url:$('cfgurl').value.trim(), openlist_token:secVal('cfgtoken'),
+    tianyi_session_key: secVal('cfgsk189'),
+    clear_tianyi_session_key:$('cfgskclear').checked,
     cas139_phone:$('cfgphone').value.trim(), cas139_auth:secVal('cfgauth'),
     web_password:secValRaw('cfgpw'), clear_web_password:$('cfgpwclear').checked,
     clear_openlist_token:$('cfgtokclear').checked, clear_cas139_auth:$('cfgauthclear').checked,
@@ -1423,7 +1456,7 @@ async function saveSettings(){
     clear_cas139_pass:$('cfgpassclear').checked, clear_cas139_mail_cookies:$('cfgcookclear').checked};
   const d = await api('/api/settings', body);
   $('setmsg').innerHTML = d.ok? '<span class=good>已保存</span>' : '<span class=err>'+esc(d.msg)+'</span>';
-  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; $('cfgtokclear').checked=false; $('cfgauthclear').checked=false; $('cfgpassclear').checked=false; $('cfgcookclear').checked=false; loadSettings(); status(); }
+  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; $('cfgtokclear').checked=false; $('cfgsk189').value=''; $('cfgskclear').checked=false; $('cfgauthclear').checked=false; $('cfgpassclear').checked=false; $('cfgcookclear').checked=false; loadSettings(); status(); }
 }
 function checkedKinds(){
   const s=new Set();

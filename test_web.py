@@ -142,6 +142,41 @@ def _m139_auth(days=30):
         ("pc:13800138000:%s" % _m139_token(days)).encode()).decode()
 
 
+MOCK189 = {"mode": "exists", "headers": []}
+
+
+class Mock189(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _json(self, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.startswith("/api/security/generateRsaKey.action"):
+            if MOCK189["mode"] == "badkey":
+                return self._json({"errorCode": "InvalidSessionKey",
+                                   "errorMsg": "bad session"})
+            return self._json({"pubKey": ct.MAIL_PUBKEY_B64, "pkId": "PK1",
+                               "expire": 1999999999000, "ver": "1"})
+        if self.path.startswith("/person/initMultiUpload"):
+            MOCK189["headers"].append(dict(self.headers))
+            return self._json({"code": "SUCCESS",
+                               "data": {"uploadFileId": "UP189"}})
+        if self.path.startswith("/person/checkTransSecond"):
+            if MOCK189["mode"] == "black":
+                return self._json({"errorCode": "FileDataBlack",
+                                   "errorMsg": "文件已被拉黑"})
+            return self._json({"code": "SUCCESS", "data": {
+                "fileDataExists": MOCK189["mode"] == "exists"}})
+        return self._json({"code": "FAIL"})
+
+
 class Mock139(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -327,6 +362,7 @@ def check(name, cond, extra=""):
 def main():
     mock_ol = serve(MockOL)
     mock_139 = serve(Mock139)
+    mock_189 = serve(Mock189)
     ol_port = mock_ol.server_address[1]
     os.environ["OPENLIST_URL"] = "http://127.0.0.1:%d" % ol_port
     os.environ["OPENLIST_TOKEN"] = "test-token"
@@ -342,6 +378,8 @@ def main():
         "sha256": "b" * 64, "recover_pass": "", "create_time": "1794055893"})
     ct.FILE_CREATE_URL = "http://127.0.0.1:%d/hcy/file/create" % mock_139.server_address[1]
     ct.FILE_COMPLETE_URL = "http://127.0.0.1:%d/hcy/file/complete" % mock_139.server_address[1]
+    ct.WEB189_URL = "http://127.0.0.1:%d" % mock_189.server_address[1]
+    ct.UPLOAD189_URL = "http://127.0.0.1:%d" % mock_189.server_address[1]
     ct.FILE_LIST_URL = "http://127.0.0.1:%d/hcy/file/list" % mock_139.server_address[1]
     ct.FILE_DOWNLOAD_URL = "http://127.0.0.1:%d/hcy/file/getDownloadUrl" % mock_139.server_address[1]
     _p139 = mock_139.server_address[1]
@@ -518,6 +556,35 @@ def main():
           and captured["complete139"], job and job["result"])
     check("生成结果带推送按钮", b"pushGenToRestore" in html and b"upback139" in html)
     check("还原区有清空按钮", b"clearRestore" in html)
+
+    # dd) v2.6.0:天翼检测(仿油猴脚本 init+checkTransSecond)
+    dd_b64 = base64.b64encode(ct.encode_cas({
+        "name": "检测样例.mkv", "size": 123456789,
+        "md5": "A" * 32, "sliceMd5": "B" * 32, "sha256": "c" * 64,
+        "recover_pass": "", "create_time": "1794055893"})).decode()
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"tianyi_session_key": "SK-TEST"})
+    check("SessionKey 已存", d["ok"] and d["data"]["tianyi_session_key_set"], d)
+    MOCK189["mode"] = "exists"
+    st, d, _ = req("POST", base + "/api/check189", {"cas_b64": dd_b64})
+    check("检测:云端有文件可秒传", d["ok"] and d["data"]["state"] == "ok", d)
+    _raw = MOCK189["headers"][-1] if MOCK189["headers"] else {}
+    hdrs = {k.lower(): v for k, v in _raw.items()}
+    check("检测请求头齐全", hdrs.get("sessionkey") == "SK-TEST"
+          and bool(hdrs.get("encryptiontext")) and bool(hdrs.get("signature"))
+          and hdrs.get("pkid") == "PK1", hdrs)
+    MOCK189["mode"] = "missing"
+    st, d, _ = req("POST", base + "/api/check189", {"cas_b64": dd_b64})
+    check("检测:云端无文件", d["ok"] and d["data"]["state"] == "missing", d)
+    MOCK189["mode"] = "black"
+    st, d, _ = req("POST", base + "/api/check189", {"cas_b64": dd_b64})
+    check("检测:拉黑原话返回", d["ok"] and d["data"]["state"] == "error"
+          and "拉黑" in d["data"]["msg"], d)
+    MOCK189["mode"] = "badkey"
+    ct._RSA189_CACHE.clear()
+    st, d, _ = req("POST", base + "/api/check189", {"cas_b64": dd_b64})
+    check("检测:SessionKey 过期提示", (not d["ok"]) and "过期" in d["msg"], d)
+    MOCK189["mode"] = "exists"
     check("类型不匹配有预警", b"casWarnFor" in html and b"warn139" in html)
     check("移动所选只写地址栏", b"pick139label" not in html and b"picked139Path" in html)
     cas_creates = [p for (_u, p) in captured["create139"]

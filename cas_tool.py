@@ -1357,3 +1357,138 @@ def refresh_139_auth(auth_b64):
     return base64.b64encode(
         ("%s:%s:%s" % (parts[0], account, m_tok.group(1).strip())
          ).encode("utf-8")).decode()
+
+
+# ---------------------------------------------------------------------------
+# 天翼网页版秒传检测(仿 GreasyFork 577019《天翼云盘秒传助手》的协议):
+# 只做 initMultiUpload + checkTransSecond 两步,不 commit —— 判断文件
+# 在不在天翼云端、能不能秒传;被拉黑等拒绝以 189 返回的原话为准。
+# 凭据是网页版 sessionKey(会过期),由调用方传入。
+# ---------------------------------------------------------------------------
+import hmac as _hmac
+import uuid as _uuid
+
+WEB189_URL = "https://cloud.189.cn"
+UPLOAD189_URL = "https://upload.cloud.189.cn"
+APPKEY_189 = "600100422"
+UA_189 = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36")
+_RSA189_CACHE = {}
+
+
+def _189_kv(params):
+    return "&".join("%s=%s" % (k, v) for k, v in params.items())
+
+
+def _189_http_get(url, headers):
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+
+
+def _189_parse(text):
+    text = (text or "").strip()
+    if text.startswith("{"):
+        try:
+            return json.loads(text)
+        except ValueError:
+            pass
+    out = {}
+    for k in ("errorCode", "errorMsg", "pubKey", "pkId", "ver"):
+        m = re.search(r"<%s>([^<]*)</%s>" % (k, k), text)
+        if m:
+            out[k] = m.group(1)
+    m = re.search(r"<expire>(\d+)</expire>", text)
+    if m:
+        out["expire"] = int(m.group(1))
+    return out
+
+
+def get_189_rsa_key(session_key):
+    now = int(time.time() * 1000)
+    ent = _RSA189_CACHE.get(session_key)
+    if ent and ent["expire"] > now + 30000:
+        return ent
+    ts = str(now)
+    sig = hashlib.md5(("AppKey=%s&Timestamp=%s" % (APPKEY_189, ts)).encode()).hexdigest()
+    url = (WEB189_URL + "/api/security/generateRsaKey.action?sessionKey="
+           + urllib.parse.quote(session_key, safe=""))
+    _st, text = _189_http_get(url, {
+        "Sign-Type": "1", "Signature": sig, "Timestamp": ts,
+        "AppKey": APPKEY_189, "SessionKey": session_key,
+        "User-Agent": UA_189, "Accept": "application/json"})
+    r = _189_parse(text)
+    if r.get("errorCode"):
+        if r["errorCode"] == "InvalidSessionKey":
+            raise RuntimeError("SessionKey 已过期,请重新获取")
+        raise RuntimeError("%s:%s" % (r["errorCode"], r.get("errorMsg") or ""))
+    if not r.get("pubKey"):
+        raise RuntimeError("天翼未返回 RSA 公钥:%s" % text[:200])
+    ent = {"pubKey": r["pubKey"], "pkId": r.get("pkId") or "",
+           "expire": int(r.get("expire") or now + 240000)}
+    _RSA189_CACHE[session_key] = ent
+    return ent
+
+
+def _189_upload_call(session_key, uri, params):
+    key = get_189_rsa_key(session_key)
+    rand = "".join(random.choice(string.ascii_letters + string.digits)
+                   for _ in range(16))
+    ts = str(int(time.time() * 1000))
+    enc = aes_ecb_encrypt(pkcs7_pad(_189_kv(params).encode("utf-8")),
+                          rand.encode()).hex().upper()
+    enc_text = rsa_encrypt_pkcs1v15(key["pubKey"], rand.encode())
+    sig_src = _189_kv({"SessionKey": session_key, "Operate": "GET",
+                       "RequestURI": uri, "Date": ts, "params": enc})
+    signature = _hmac.new(rand.encode(), sig_src.encode("utf-8"),
+                          hashlib.sha1).hexdigest().upper()
+    _st, text = _189_http_get(UPLOAD189_URL + uri + "?params=" + enc, {
+        "X-Request-Date": ts, "X-Request-ID": str(_uuid.uuid4()),
+        "SessionKey": session_key, "EncryptionText": enc_text,
+        "PkId": key["pkId"], "Signature": signature, "User-Agent": UA_189})
+    return _189_parse(text)
+
+
+def _189_err(r):
+    if r.get("errorCode"):
+        if r["errorCode"] == "InvalidSessionKey":
+            return "SessionKey 已过期,请重新获取"
+        return "%s:%s" % (r["errorCode"], r.get("errorMsg") or "")
+    if r.get("code") and r["code"] != "SUCCESS":
+        return str(r.get("msg") or r["code"])
+    return None
+
+
+def check_189_cas(session_key, meta):
+    """meta 为 cas 解析结果(name/size/md5/sliceMd5)。返回
+    {"state": ok|missing|error, "msg": ...}:ok=云端有、可秒传;
+    missing=云端没有;error=189 拒绝(拉黑等)或会话问题,msg 为原话。"""
+    if not session_key:
+        raise RuntimeError("未配置天翼 SessionKey(设置页「天翼云盘」区)")
+    md5 = (meta.get("md5") or "").strip()
+    sl = (meta.get("sliceMd5") or "").strip()
+    if not md5 or not sl:
+        raise RuntimeError("这份 cas 没有 md5/sliceMd5(移动版 cas),做不了天翼检测")
+    size = int(meta.get("size") or 0)
+    init = _189_upload_call(session_key, "/person/initMultiUpload", {
+        "parentFolderId": "-11",
+        "fileName": urllib.parse.quote(str(meta.get("name") or ""), safe=""),
+        "fileSize": size, "sliceSize": cas_slice_size(size), "lazyCheck": "1"})
+    e = _189_err(init)
+    if e:
+        return {"state": "error", "msg": e}
+    up_id = (init.get("data") or {}).get("uploadFileId") or ""
+    if not up_id:
+        return {"state": "error",
+                "msg": "天翼 init 未返回 uploadFileId:%s" % json.dumps(init, ensure_ascii=False)[:200]}
+    chk = _189_upload_call(session_key, "/person/checkTransSecond", {
+        "fileMd5": md5, "sliceMd5": sl, "uploadFileId": up_id})
+    e = _189_err(chk)
+    if e:
+        return {"state": "error", "msg": e}
+    exists = bool((chk.get("data") or {}).get("fileDataExists"))
+    return {"state": "ok" if exists else "missing",
+            "msg": "文件在天翼云端,可秒传" if exists else "文件不存在于云端,无法秒传"}

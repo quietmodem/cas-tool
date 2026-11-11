@@ -148,7 +148,15 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v2.5.5(2026-11-11)。Web v2.5.5:修复移动
+版本: CLI v1.0.0 / Web v2.6.0(2026-11-11)。Web v2.6.0:新增「天翼
+检测」,协议仿 GreasyFork 577019《天翼云盘秒传助手》:用网页版
+sessionKey 走 generateRsaKey + AES-ECB/RSA/HMAC-SHA1 签名,只调
+initMultiUpload(lazyCheck)+ checkTransSecond 两步、不 commit,
+判断文件在不在天翼云端、能不能秒传;被拉黑等拒绝显示 189 的
+errorCode/errorMsg 原话。设置页「天翼云盘」区新增 SessionKey
+配置(获取方式写在页面上,会过期);还原列表每份带 md5 的 cas
+旁有「🔍 天翼检测」按钮,结果显示在该行。
+Web v2.5.5:修复移动
 旁存 .cas 上传失败——139 分片计划每片须带 parallelHashCtx
 .partOffset(照 OpenList 139 驱动),此前缺失导致 create 不返回
 uploadUrl、误报「未存成功」(视频秒传本身不受影响);旁存再失败
