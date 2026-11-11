@@ -871,6 +871,10 @@ def main():
           and "不能生成" in d.get("msg", ""), d)
     check("生成页 .cas 条目无生成按钮", "endsWith('.cas')" in html
           and "生成 CAS" in html)
+    # jj) v2.7.3:iOS 文件选择器对未知扩展名 .cas 会置灰,文件输入不设 accept
+    casfile_tag = html.split('id="casfile"')[1].split(">")[0] if 'id="casfile"' in html else ""
+    check("文件选择不限制扩展名(iOS 可选 .cas)", "accept" not in casfile_tag,
+          casfile_tag)
     check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
           and "/api/jobs/delete-source" in html)
     check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html

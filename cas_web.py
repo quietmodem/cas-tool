@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.7.2"
+VERSION = "2.7.3"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1367,7 +1367,7 @@ button:disabled{opacity:.35}
 
 <div id="tab-restore">
 <div class="card"><h2>还原 CAS</h2>
-<input type="file" id="casfile" accept=".cas,.txt,.zip" multiple hidden onchange="inspectCas()">
+<input type="file" id="casfile" multiple hidden onchange="inspectCas()">
 <div id="dropzone" class="dropzone" onclick="$('casfile').click()">📥 把 .cas / .zip 拖到这里,或点击选择文件(可多选)</div>
 <textarea id="castext" placeholder="或把 .cas 的内容(Base64 文本)粘贴到这里"></textarea>
 <div class="row"><span><button onclick="inspectCas()">解析</button></span><button class="grey" onclick="clearRestore()">清空</button></div>
