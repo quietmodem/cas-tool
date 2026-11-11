@@ -618,6 +618,11 @@ def main():
     check("移动根列表无云盘根目录项",
           "{id:'/', name:'移动云盘根目录'}" not in html)
     check("选目录按已选移动目录直达", "p139Stack=[{id:pid, name:nm}]" in html)
+
+    # aa) v2.4.2:填入移动后地址栏显示 + 生成页限定挂载目录
+    check("填入移动后地址栏有显示", "'移动云盘:'+nm" in html)
+    check("生成页天翼根归一", "function tianyiRoots()" in html
+          and "genEnterRoot" in html and "m139EnterRoot" in html)
     hdrs, payload = [c for c in captured["create139"]
                      if str(c[1].get("name") or "").endswith(".mkv")][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==

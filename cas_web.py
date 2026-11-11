@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.4.1"
+VERSION = "2.4.2"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1111,7 +1111,7 @@ button:disabled{opacity:.35}
 <button onclick="inspectCas()">解析</button>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
-<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼挂载目录,移动按钮用移动挂载目录)">
+<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼挂载目录,移动按钮用移动挂载目录)" oninput="$('parent139').value='';$('pick139label').textContent=''">
 <button class="small grey" onclick="togglePicker('target189')">📁 选目录</button></div>
 <div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼挂载目录</button>
 <button class="small grey" onclick="fillHome139()">填入移动云盘挂载目录</button><span id="pick139label" class="mut"></span></div>
@@ -1142,7 +1142,7 @@ button:disabled{opacity:.35}
 </div>
 
 <div id="tab-gen" style="display:none">
-<div class="row"><button class="small grey" id="srcOl" onclick="setBrowseSrc('ol')">🌐 OpenList 网盘</button>
+<div class="row"><button class="small grey" id="srcOl" onclick="setBrowseSrc('ol')">☁️ 天翼云盘</button>
 <button class="small grey" id="src139" onclick="setBrowseSrc('139')">📱 移动云盘(直连)</button></div>
 <div class="card" id="olbrowse"><h2>浏览网盘 · 生成 CAS</h2>
 <div class="row"><button class="small grey" onclick="goUp()">⬆ 上级</button>
@@ -1152,7 +1152,7 @@ button:disabled{opacity:.35}
 <label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后把 .cas 上传回同目录</label>
 <div id="entries"></div></div>
 <div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 CAS</h2>
-<div class="row"><button class="small grey" onclick="m139Up(0)">🏠 根目录</button>
+<div class="row"><button class="small grey" onclick="m139Roots()">🏠 目录</button>
 <button class="small grey" onclick="m139GoHome()">⭐ 默认目录</button>
 <span class="grow" id="m139crumbs">移动云盘</span>
 <button class="small grey" onclick="loadM139()">刷新</button></div>
@@ -1354,6 +1354,7 @@ async function loadSettings(){
   $('cfgpw').value = SETTINGS.web_password_set? MASK : '';
   $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置'+(SETTINGS.openlist_token_source? ' · 来自'+SETTINGS.openlist_token_source : '')+')' : '(未设置)';
   $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置'+(SETTINGS.cas139_auth_expiry? ' · 授权到期 '+SETTINGS.cas139_auth_expiry : '')+')' : '(未设置)';
+  loadList();
   $('pwstate').textContent = SETTINGS.web_password_set? '(已设置)' : '(未设置)';
 }
 async function saveSettings(){
@@ -1372,14 +1373,21 @@ async function saveSettings(){
   if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; $('cfgtokclear').checked=false; $('cfgauthclear').checked=false; $('cfgpassclear').checked=false; $('cfgcookclear').checked=false; loadSettings(); status(); }
 }
 function fillHome(which){
-  const v = which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home;
-  if(v){ $('target189').value=v; } else { alert('还没设置挂载目录,先到「设置」页设置'); }
+  const v = SETTINGS.tianyi_home;
+  if(v){ $('target189').value=v; $('parent139').value=''; $('pick139label').textContent=''; } else { alert('还没设置挂载目录,先到「设置」页设置'); }
 }
 function goHome(which){
-  const v = which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home;
-  if(v){ curPath=v; loadList(); } else { alert('还没设置挂载目录,先到「设置」页设置'); }
+  const v = SETTINGS.tianyi_home;
+  if(v){ genRoot=v; curPath=v; loadList(); } else { alert('还没设置挂载目录,先到「设置」页设置'); }
 }
 let pickerCloud='189', p139Stack=[], p139Items=[];
+function tianyiRoots(){
+  const roots=[];
+  if(SETTINGS.tianyi_home) roots.push(SETTINGS.tianyi_home);
+  for(const x of (SETTINGS.tianyi_paths||[])){ if(x && roots.indexOf(x)<0) roots.push(x); }
+  if(roots.indexOf('/')>=0) return ['/'];
+  return roots;
+}
 function pickerRoots139(){
   const roots=[];
   for(const d of (SETTINGS.mobile_dirs||[])) roots.push({id:d.id, name:d.name||d.id});
@@ -1398,9 +1406,7 @@ function togglePicker(targetId){
       pickerCloud='189';
       if(pickerTarget.indexOf('append:')!==0) pickerPath = ($(pickerTarget).value||'').trim() || '/';
     } else {
-      const roots=[];
-      if(SETTINGS.tianyi_home) roots.push({label:'☁️ 天翼云盘', path:SETTINGS.tianyi_home});
-      for(const x of (SETTINGS.tianyi_paths||[])){ if(x && x!==SETTINGS.tianyi_home) roots.push({label:'☁️ 天翼目录', path:x}); }
+      const roots = tianyiRoots().map((p,i)=>({label: i===0? '☁️ 天翼云盘' : '☁️ 天翼目录', path:p}));
       pickerScope = roots.length? {roots:roots, base:''} : null;
       const isRestore = pickerTarget==='target189';
       const tval = (isRestore? ($('target189').value||'') : ($('scanpath').value||'')).trim();
@@ -1465,9 +1471,10 @@ function renderCrumbs(){
     const base=pickerScope.base;
     const root=pickerScope.roots.find(r=>r.path===base);
     let h='<span class="crumb" onclick="pickerToChoice()">'+esc(root? root.label : '挂载目录')+'</span>';
-    let acc=base;
-    const rel = pickerPath===base? '' : pickerPath.slice(base.length);
-    for(const p of rel.split('/').filter(Boolean)){ acc+='/'+p; h+=' <span class="mut">›</span> <span class="crumb" onclick="pickerGo(\''+esc(acc)+'\')">'+esc(p)+'</span>'; }
+    const baseParts = base==='/'? [] : base.split('/').filter(Boolean);
+    const allParts = pickerPath.split('/').filter(Boolean);
+    let acc = base==='/'? '' : base;
+    for(let k=baseParts.length;k<allParts.length;k++){ acc+='/'+allParts[k]; h+=' <span class="mut">›</span> <span class="crumb" onclick="pickerGo(\''+esc(acc)+'\')">'+esc(allParts[k])+'</span>'; }
     $('crumbs').innerHTML=h;
     return;
   }
@@ -1489,7 +1496,7 @@ function renderPicker(){
 function pickerGo(p){
   if(pickerScope && pickerScope.base){
     const b=pickerScope.base;
-    if(!(p===b || p.startsWith(b+'/'))) p=b;
+    if(b!=='/' && !(p===b || p.startsWith(b+'/'))) p=b;
   }
   pickerPath=p; $('pickerfilter').value=''; loadPicker();
 }
@@ -1589,6 +1596,7 @@ function itemCloud(it){
 async function restoreCore(to, items, setStatus){
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   let target = $('target189').value.trim();
+  if(to!=='mobile' && target.startsWith('移动云盘:')) target = SETTINGS.tianyi_home || '/';
   const dirs139 = SETTINGS.mobile_dirs||[];
   const directHome139 = (to==='mobile' && !$('parent139').value.trim())? ((dirs139[0]&&dirs139[0].id) || SETTINGS.mobile_home_id || '') : '';
   if(to!=='mobile' && !target) target = SETTINGS.tianyi_home || '/';
@@ -1649,7 +1657,7 @@ async function doRestore(to){
   $('restoremsg').innerHTML='批量还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标目录: '+esc(r.target)+')';
 }
 let browseSrc='ol';
-let m139Stack=[{id:'/',name:'移动云盘'}], m139Items=[];
+let m139Stack=[], m139Items=[];
 function setBrowseSrc(s){
   browseSrc=s;
   $('olbrowse').style.display = s==='ol'? '' : 'none';
@@ -1657,6 +1665,13 @@ function setBrowseSrc(s){
   if(s==='139') loadM139();
 }
 async function loadM139(){
+  if(!m139Stack.length){
+    $('m139crumbs').textContent='移动云盘目录';
+    const roots=pickerRoots139();
+    $('m139entries').innerHTML = roots.length? roots.map((r,i)=>'<div class=row><span class=grow>📁 '+esc(r.name)+'</span><button class="small grey" onclick="m139EnterRoot('+i+')">打开</button></div>').join('')
+      : '<span class=mut>未配置目录(设置页「移动云盘目录」)</span>';
+    return;
+  }
   const cur=m139Stack[m139Stack.length-1];
   $('m139crumbs').textContent = m139Stack.map(c=>c.name).join(' / ');
   $('m139entries').innerHTML='<span class=mut>加载中...</span>';
@@ -1668,6 +1683,8 @@ async function loadM139(){
     : '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span><button class="small green" onclick="genCas139('+i+')">生成 cas</button></div>'
   ).join('') || '<span class=mut>(空文件夹)</span>';
 }
+function m139EnterRoot(i){ const r=pickerRoots139()[i]; m139Stack=[{id:r.id,name:r.name}]; loadM139(); }
+function m139Roots(){ m139Stack=[]; loadM139(); }
 function m139Down(i){ const e=m139Items[i]; m139Stack.push({id:e.id,name:e.name}); loadM139(); }
 function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); loadM139(); }
 async function genCas139(i){
@@ -1686,17 +1703,30 @@ function fillHome139(){
   const id=(dirs[0]&&dirs[0].id)||SETTINGS.mobile_home_id||'';
   if(!id){ alert('先到「设置」页配置移动云盘目录'); return; }
   $('parent139').value=id;
-  $('pick139label').textContent='移动目标:'+((dirs[0]&&dirs[0].name)||SETTINGS.mobile_home_name||id);
+  const nm=((dirs[0]&&dirs[0].name)||SETTINGS.mobile_home_name||id);
+  $('pick139label').textContent='移动目标:'+nm;
+  $('target189').value='移动云盘:'+nm;
 }
 function m139GoHome(){
   const dirs=SETTINGS.mobile_dirs||[];
   const id=(dirs[0]&&dirs[0].id)||SETTINGS.mobile_home_id;
   if(!id){ alert('先到「设置」页配置移动云盘目录'); return; }
   const nm=((dirs[0]&&dirs[0].name)||SETTINGS.mobile_home_name||'目录').split('/').pop();
-  m139Stack=[{id:'/',name:'移动云盘'},{id:id,name:nm}];
+  m139Stack=[{id:id,name:nm}];
   loadM139();
 }
+let genRoot=null;
 async function loadList(){
+  const roots=tianyiRoots();
+  if(genRoot===null){
+    if(roots.length===1){ genRoot=roots[0]; curPath=genRoot; }
+    else {
+      $('curpath').textContent='天翼挂载目录';
+      $('entries').innerHTML = roots.length? roots.map((r,i)=>'<div class=row><span class=grow>📁 '+esc(r)+'</span><button class="small grey" onclick="genEnterRoot('+i+')">打开</button></div>').join('')
+        : '<div class=mut>先到「设置」页配置天翼挂载目录</div>';
+      return;
+    }
+  }
   const d = await api('/api/list?path='+encodeURIComponent(curPath));
   if(!d.ok){ $('entries').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
   $('curpath').textContent=curPath;
@@ -1706,8 +1736,12 @@ async function loadList(){
     return '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span><button class="small green" onclick="genCas(\''+esc(p)+'\','+e.size+')">生成 cas</button></div>';
   }).join('') || '<div class=mut>空目录</div>';
 }
+function genEnterRoot(i){ genRoot=tianyiRoots()[i]; curPath=genRoot; loadList(); }
 function enterDir(p){ curPath=p; loadList(); }
-function goUp(){ if(curPath!=='/'){ curPath=curPath.split('/').slice(0,-1).join('/')||'/'; loadList(); } }
+function goUp(){
+  if(genRoot!==null && curPath===genRoot){ if(tianyiRoots().length>1){ genRoot=null; loadList(); } return; }
+  if(curPath!=='/'){ curPath=curPath.split('/').slice(0,-1).join('/')||'/'; loadList(); }
+}
 async function genCas(p,size){
   const d = await api('/api/gen',{path:p,size:size,upload_back:$('upback').checked});
   alert(d.ok? '已开始生成,进度看「任务」区' : d.msg);
