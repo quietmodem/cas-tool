@@ -517,6 +517,19 @@ def main():
     check("按直连主目录 ID 还原",
           d["ok"] and len(captured["create139"]) == n_create + 1
           and captured["create139"][-1][1]["parentFileId"] == "HOMEID-42", d)
+
+    # v) 手动刷新的兜底话术
+    M139_LOGIN["refresh_ok"] = False
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"cas139_auth": _m139_auth(30), "clear_cas139_pass": True,
+                    "clear_cas139_mail_cookies": True, "cas139_user": ""})
+    st, d, _ = req("POST", base + "/api/m139/relogin", {})
+    check("有效授权刷新失败给兜底说明", d["ok"] and "有效到" in d["data"]["msg"], d)
+    st, d, _ = req("POST", base + "/api/settings", {"cas139_auth": _m139_auth(-1)})
+    st, d, _ = req("POST", base + "/api/m139/relogin", {})
+    check("过期且无回退时报错指明要填三项",
+          not d["ok"] and "MailCookies" in d["msg"], d)
+    M139_LOGIN["refresh_ok"] = True
     hdrs, payload = captured["create139"][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")

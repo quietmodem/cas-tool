@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.1.1"
+VERSION = "2.1.2"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -317,9 +317,10 @@ def _m139_login(cfg, allow_fast):
             raise
         except Exception as e:  # noqa: BLE001
             errs.append("密码登录:%s" % e)
-    raise RuntimeError("移动自动登录失败(%s)"
-                       % (";".join(errs) if errs
-                          else "未配置邮箱 Cookie / 用户名 / 密码"))
+    if not errs:
+        raise RuntimeError("未配置密码登录回退:请先把 OpenList 139 存储里的 "
+                           "MailCookies、Username、Password 复制到设置页对应三项并保存")
+    raise RuntimeError("移动自动登录失败(%s)" % ";".join(errs))
 
 
 def m139_ensure_auth(force=False):
@@ -826,7 +827,18 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     m139_ensure_auth(force=True)
                     return self.ok({"msg": "移动授权已刷新/重新登录,新授权已保存"})
+                except ct.SmsVerificationNeeded as e:
+                    return self.fail(str(e))
                 except Exception as e:  # noqa: BLE001
+                    cfg = _m139_cfg()
+                    exp = ct.auth_expiry_ms(cfg["auth"]) if cfg["auth"] else None
+                    if exp and exp > int(time.time() * 1000):
+                        return self.ok({"msg": "这次没刷新成功(%s);但现有授权"
+                                               "有效到 %s,暂时不受影响。填好上方"
+                                               "密码登录回退三项并保存后,再点刷新"
+                                               "就能自动续期"
+                                               % (str(e)[:140],
+                                                  _auth_expiry_text(cfg["auth"]))})
                     return self.fail(str(e))
             if path == "/api/m139/list":
                 try:
@@ -1283,6 +1295,8 @@ function secVal(id){ const v=$(id).value; return v===MASK? '' : v.trim(); }
 function secValRaw(id){ const v=$(id).value; return v===MASK? '' : v; }
 ['cfgtoken','cfgauth','cfgpw','cfgpass139','cfgsms','cfgcookies'].forEach(function(id){ const el=$(id); if(el) el.addEventListener('focus', function(){ if(el.value===MASK) el.select(); }); });
 async function relogin139(){
+  $('reloginmsg').textContent='先保存设置...';
+  await saveSettings();
   $('reloginmsg').textContent='刷新/登录中...';
   const d = await api('/api/m139/relogin',{});
   $('reloginmsg').innerHTML = d.ok? '<span class=good>'+esc(d.data.msg)+'</span>' : '<span class=err>'+esc(d.msg)+'</span>';
