@@ -26,7 +26,7 @@ FPATH = "/天翼云盘/" + FNAME
 SCAN_CAS = None  # main() 里用真实 cas_tool 编码生成
 
 captured = {"put": [], "seed": [], "create139": [], "put139": b"", "complete139": None,
-            "mkdir": [], "trash139": []}
+            "mkdir": [], "trash139": [], "remove": []}
 
 
 class MockOL(BaseHTTPRequestHandler):
@@ -61,6 +61,9 @@ class MockOL(BaseHTTPRequestHandler):
                            {"name": "子目录", "size": 0, "is_dir": True}]
             elif body.get("path") == "/扫描/子目录":
                 content = [{"name": "b.cas", "size": len(SCAN_CAS), "is_dir": False}]
+            elif body.get("path") == "/删除测试":
+                content = [{"name": "待删源文件.mkv", "size": len(CONTENT), "is_dir": False},
+                           {"name": "待删源文件.mkv.cas", "size": len(SCAN_CAS), "is_dir": False}]
             else:
                 content = []
             return self._json({"code": 200, "data": {"content": content, "total": len(content)}})
@@ -81,6 +84,9 @@ class MockOL(BaseHTTPRequestHandler):
                 "raw_url": "http://127.0.0.1:%d/raw" % self.server.server_address[1]}})
         if self.path == "/api/fs/mkdir":
             captured["mkdir"].append(body.get("path"))
+            return self._json({"code": 200, "data": {}})
+        if self.path == "/api/fs/remove":
+            captured["remove"].append(body)
             return self._json({"code": 200, "data": {}})
         if self.path == "/api/fs/seed/capabilities":
             captured["seed"].append(("capabilities", body))
@@ -266,6 +272,11 @@ class Mock139(BaseHTTPRequestHandler):
                 items = [{"fileId": "F139B", "name": "子文件.mkv",
                           "size": len(CONTENT), "type": "file"},
                          {"fileId": "CAS1", "name": "样本.cas",
+                          "size": len(MOCK_CAS_BYTES), "type": "file"}]
+            elif parent == "DEL139":
+                items = [{"fileId": "FDEL", "name": "待删源文件.mkv",
+                          "size": len(CONTENT), "type": "file"},
+                         {"fileId": "CDEL", "name": "待删源文件.mkv.cas",
                           "size": len(MOCK_CAS_BYTES), "type": "file"}]
             else:
                 items = []
@@ -748,7 +759,7 @@ def main():
     check("天翼接入方式设置往返", d["data"].get("tianyi_access") == "openlist", d)
     st, d, _ = req("POST", base + "/api/restore139",
                    {"cas_b64": sample_b64, "parent": "D1", "sidecar": True})
-    check("移动还原带旁存成功", d["ok"] and "已存到同目录" in d["msg"], d)
+    check("移动还原带旁存成功", d["ok"] and "已保存至同目录" in d["msg"], d)
     check("旁存 .cas 字节经 PUT 直传",
           captured.get("put139") == base64.b64decode(sample_b64),
           str(captured.get("put139"))[:60])
@@ -798,6 +809,79 @@ def main():
     check("139 请求带 Authorization 与三段签名",
           hdrs.get("Authorization", "").startswith("Basic ")
           and len(hdrs.get("Mcloud-Sign", "").split(",")) == 3, hdrs.get("Mcloud-Sign"))
+
+    # gg) v2.7.0:扫描原目录信息 + 原目录还原入口 + 生成后删除源文件
+    st, d, _ = req("POST", base + "/api/scan", {"path": "/扫描", "recursive": True})
+    scan_by_name = {x["cas_name"]: x for x in d["data"]} if d["ok"] else {}
+    check("OpenList 扫描带原目录", d["ok"]
+          and scan_by_name["a.cas"]["source_type"] == "ol"
+          and scan_by_name["a.cas"]["source_dir"] == "/扫描"
+          and scan_by_name["b.cas"]["source_dir"] == "/扫描/子目录",
+          d)
+    st, d, _ = req("POST", base + "/api/m139/scan", {"parent": "/", "recursive": True})
+    scan139_item = [x for x in d["data"] if x["cas_name"] == "样本.cas"][0] if d["ok"] else {}
+    check("139 扫描带原目录 ID", d["ok"]
+          and scan139_item.get("source_type") == "139"
+          and scan139_item.get("source_parent_id") == "D1"
+          and scan139_item.get("source_dir") == "移动云盘/视频",
+          scan139_item)
+    check("扫描区有原目录还原", "restoreScanInPlace" in html and "原目录还原" in html)
+    check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
+          and "/api/jobs/delete-source" in html)
+    check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html
+          and "生成后,CAS文件保存至同目录" in html
+          and "把 .cas 也存到目标目录" not in html)
+    check("指定设置备注已删除", "天翼 CAS 还到非天翼目录" not in html)
+
+    def wait_job(job_id):
+        found = None
+        for _ in range(60):
+            _st, jobs_resp, _ = req("GET", base + "/api/jobs")
+            found = [j for j in jobs_resp["data"] if j["id"] == job_id][0]
+            if found["status"] != "running":
+                break
+            time.sleep(0.5)
+        return found
+
+    st, d, _ = req("POST", base + "/api/gen",
+                   {"path": "/删除测试/待删源文件.mkv", "size": len(CONTENT),
+                    "upload_back": True})
+    jid_ol_del = d["data"]["job_id"]
+    job = wait_job(jid_ol_del)
+    check("删除测试的 OpenList 生成完成", job and job["status"] == "done"
+          and bool(job["result"].get("uploaded_to")), job)
+    st, d, _ = req("POST", base + "/api/jobs/delete-source", {"ids": [jid_ol_del]})
+    check("OpenList 源文件已删除", d["ok"] and d["data"]["deleted"] == 1
+          and captured["remove"][-1] == {"dir": "/删除测试", "names": ["待删源文件.mkv"]},
+          d)
+    job = wait_job(jid_ol_del)
+    check("OpenList 删除状态已记录", job["result"].get("source_deleted") is True, job)
+
+    st, d, _ = req("POST", base + "/api/m139/gen",
+                   {"file_id": "FDEL", "name": "待删源文件.mkv",
+                    "size": len(CONTENT), "parent": "DEL139",
+                    "upload_back": True, "path": "删除测试/待删源文件.mkv"})
+    jid_139_del = d["data"]["job_id"]
+    job = wait_job(jid_139_del)
+    check("删除测试的 139 生成完成", job and job["status"] == "done"
+          and bool(job["result"].get("uploaded_to")), job)
+    trash_before = list(captured["trash139"])
+    st, d, _ = req("POST", base + "/api/jobs/delete-source", {"ids": [jid_139_del]})
+    check("139 源文件已移入回收站", d["ok"] and d["data"]["deleted"] == 1
+          and captured["trash139"] == trash_before + ["FDEL"], d)
+    job = wait_job(jid_139_del)
+    check("139 删除状态已记录", job["result"].get("source_deleted") is True, job)
+
+    st, d, _ = req("POST", base + "/api/gen",
+                   {"path": "/删除测试/待删源文件.mkv", "size": len(CONTENT),
+                    "upload_back": False})
+    jid_no_up = d["data"]["job_id"]
+    job = wait_job(jid_no_up)
+    remove_before = list(captured["remove"])
+    st, d, _ = req("POST", base + "/api/jobs/delete-source", {"ids": [jid_no_up]})
+    check("未保存 cas 的任务禁止删除源文件", d["ok"] and d["data"]["deleted"] == 0
+          and "未保存回原目录" in d["data"]["results"][0]["msg"]
+          and captured["remove"] == remove_before, d)
 
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",

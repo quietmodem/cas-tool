@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.6.4"
+VERSION = "2.7.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -188,12 +188,13 @@ def _load_jobs():
 _load_jobs()
 
 
-def job_new(kind, title, path=""):
+def job_new(kind, title, path="", source=None):
     jid = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
         JOBS[jid] = {"id": jid, "kind": kind, "title": title, "status": "running",
                      "progress": None, "message": "", "result": None,
-                     "path": path, "ts": int(time.time())}
+                     "path": path, "source": source or {},
+                     "ts": int(time.time())}
     _save_jobs(force=True)
     return jid
 
@@ -203,6 +204,95 @@ def job_update(jid, **kw):
         if jid in JOBS:
             JOBS[jid].update(kw)
     _save_jobs(force=("status" in kw))
+
+
+def _split_ol_path(path):
+    path = (path or "").rstrip("/")
+    if "/" not in path:
+        return "/", path
+    parent, name = path.rsplit("/", 1)
+    return parent or "/", name
+
+
+def _job_source(job):
+    """生成任务的源文件定位信息；旧任务仅 OpenList 类型可由 path 补齐。"""
+    source = job.get("source") or {}
+    if source:
+        return source
+    if job.get("kind") == "gen" and job.get("path"):
+        parent, name = _split_ol_path(job["path"])
+        return {"type": "ol", "path": job["path"], "dir": parent, "name": name}
+    return {}
+
+
+_SOURCE_DELETING = set()
+_SOURCE_DELETING_LOCK = threading.Lock()
+
+
+def delete_job_source(jid):
+    with _SOURCE_DELETING_LOCK:
+        if jid in _SOURCE_DELETING:
+            raise RuntimeError("该任务的源文件正在删除")
+        _SOURCE_DELETING.add(jid)
+    try:
+        return _delete_job_source_once(jid)
+    finally:
+        with _SOURCE_DELETING_LOCK:
+            _SOURCE_DELETING.discard(jid)
+
+
+def _delete_job_source_once(jid):
+    """删除一个已生成任务的源文件本体。
+
+    仅处理已完成且结果显示 .cas 已保存回原目录的任务；删除前再次
+    列源目录确认同名 .cas 仍在，避免源文件与 .cas 同时丢失。
+    """
+    with JOBS_LOCK:
+        job = json.loads(json.dumps(JOBS.get(jid) or {}))
+    if not job:
+        raise RuntimeError("任务不存在")
+    if job.get("kind") not in ("gen", "gen139"):
+        raise RuntimeError("该任务不是生成任务")
+    if job.get("status") != "done":
+        raise RuntimeError("任务尚未生成完成")
+    result = job.get("result") or {}
+    if not result.get("uploaded_to"):
+        raise RuntimeError(".cas 未保存回原目录，不能删除源文件")
+    if result.get("source_deleted"):
+        return "源文件已删除"
+    source = _job_source(job)
+    name = source.get("name") or result.get("name") or ""
+    if not name:
+        raise RuntimeError("任务缺少源文件信息，不能删除")
+    cas_name = name + ".cas"
+    if source.get("type") == "ol":
+        parent = source.get("dir") or _split_ol_path(source.get("path") or "")[0]
+        entries = ol_list(parent, refresh=True)
+        if not any(e.get("name") == cas_name and not e.get("is_dir")
+                   for e in entries):
+            raise RuntimeError("源目录未找到已保存的 .cas，已取消删除")
+        ol_post("/fs/remove", {"dir": parent, "names": [name]})
+    elif source.get("type") == "139":
+        parent = source.get("parent") or ""
+        file_id = source.get("file_id") or ""
+        if not parent or not file_id:
+            raise RuntimeError("任务缺少移动云盘源文件标识，不能删除")
+        entries = ct.list_139_files(m139_basic(), parent)
+        if not any(e.get("name") == cas_name and not e.get("is_dir")
+                   for e in entries):
+            raise RuntimeError("源目录未找到已保存的 .cas，已取消删除")
+        ct.trash_139(m139_basic(), file_id)
+    else:
+        raise RuntimeError("任务缺少源文件定位信息，不能删除")
+    with JOBS_LOCK:
+        current = JOBS.get(jid)
+        if not current:
+            return "源文件已删除"
+        new_result = dict(current.get("result") or {})
+        new_result["source_deleted"] = True
+        current["result"] = new_result
+    _save_jobs(force=True)
+    return "源文件已删除"
 
 
 def _run_gen(jid, size, opener, name, uploader):
@@ -253,7 +343,7 @@ def _run_gen(jid, size, opener, name, uploader):
         result = {"name": name, "size": size,
                   "cas_b64": base64.b64encode(cas_bytes).decode()}
         if uploader:
-            job_update(jid, message="上传 .cas 回同目录 ...")
+            job_update(jid, message="正在将CAS文件保存至同目录 ...")
             result["uploaded_to"] = uploader(cas_bytes)
         job_update(jid, status="done", progress=100, message="完成", result=result)
     except Exception as e:  # noqa: BLE001
@@ -280,7 +370,7 @@ def run_gen_job139(jid, file_id, name, size, parent="/", upload_back=True,
                     if it["name"] == name + ".cas" and not it["is_dir"]:
                         ct.trash_139(m139_basic(), it["id"])
             ct.upload_139_bytes(m139_basic(), parent, name + ".cas", cas_bytes)
-            return "移动云盘:" + name + ".cas(视频旁)"
+            return "移动云盘:" + name + ".cas(同目录)"
     _run_gen(jid, size, lambda: m139_download_iter(file_id), name, up)
 
 
@@ -928,15 +1018,32 @@ class Handler(BaseHTTPRequestHandler):
                 gsize = int(body.get("size") or 0)
                 if not fid or gsize <= 0:
                     return self.fail("缺少 file_id / size")
+                parent = str(body.get("parent") or "/")
                 jid = job_new("gen139", "生成 cas(移动直连): " + gname,
-                              str(body.get("path") or ""))
+                              str(body.get("path") or ""),
+                              {"type": "139", "file_id": fid,
+                               "parent": parent, "name": gname})
                 threading.Thread(target=run_gen_job139,
-                                 args=(jid, fid, gname, gsize,
-                                       str(body.get("parent") or "/"),
+                                 args=(jid, fid, gname, gsize, parent,
                                        bool(body.get("upload_back", True)),
                                        bool(body.get("overwrite"))),
                                  daemon=True).start()
                 return self.ok({"job_id": jid})
+            if path == "/api/jobs/delete-source":
+                results = []
+                seen = set()
+                for jid in body.get("ids") or []:
+                    if jid in seen:
+                        continue
+                    seen.add(jid)
+                    try:
+                        msg = delete_job_source(jid)
+                        results.append({"id": jid, "ok": True, "msg": msg})
+                    except Exception as e:  # noqa: BLE001
+                        results.append({"id": jid, "ok": False,
+                                        "msg": str(e)[:300]})
+                deleted = sum(1 for r in results if r["ok"])
+                return self.ok({"deleted": deleted, "results": results})
             if path == "/api/jobs/clear":
                 removed = 0
                 with JOBS_LOCK:
@@ -963,9 +1070,9 @@ class Handler(BaseHTTPRequestHandler):
                         ct.upload_139_bytes(m139_basic(), parent,
                                             (obj.get("name") or "file") + ".cas",
                                             cas_bytes)
-                        msg += "(.cas 已存到同目录)"
+                        msg += "(CAS文件已保存至同目录)"
                     except Exception as e:  # noqa: BLE001
-                        msg += "(.cas 存同目录失败: %s)" % str(e)[:120]
+                        msg += "(CAS文件保存至同目录失败: %s)" % str(e)[:120]
                 return self.ok(msg=msg) if ok else self.fail(msg)
             if path == "/api/restore189":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
@@ -1019,7 +1126,9 @@ class Handler(BaseHTTPRequestHandler):
         size = int(body.get("size") or 0)
         if not path or size <= 0:
             return self.fail("缺少 path / size")
-        jid = job_new("gen", "生成 cas: " + path, path)
+        parent, name = _split_ol_path(path)
+        jid = job_new("gen", "生成 cas: " + path, path,
+                      {"type": "ol", "path": path, "dir": parent, "name": name})
         t = threading.Thread(target=run_gen_job,
                              args=(jid, path, size, bool(body.get("upload_back"))),
                              daemon=True)
@@ -1052,6 +1161,9 @@ class Handler(BaseHTTPRequestHandler):
                             data = resp.read()
                         found.append({"path": p, "cas_name": e["name"],
                                       "cas_b64": base64.b64encode(data).decode(),
+                                      "source_type": "ol",
+                                      "source_dir": dirpath,
+                                      "source_parent_id": "",
                                       **cas_summary(data)})
                     except Exception:  # noqa: BLE001
                         continue
@@ -1091,6 +1203,9 @@ class Handler(BaseHTTPRequestHandler):
                         found.append({"path": disp + "/" + e["name"],
                                       "cas_name": e["name"],
                                       "cas_b64": base64.b64encode(data).decode(),
+                                      "source_type": "139",
+                                      "source_dir": disp,
+                                      "source_parent_id": fid,
                                       **cas_summary(data)})
                     except Exception:  # noqa: BLE001
                         continue
@@ -1104,7 +1219,7 @@ class Handler(BaseHTTPRequestHandler):
         summary = cas_summary(cas_bytes)
         video = body.get("video_name") or summary.get("name") or ""
         if not video:
-            return self.fail("cas 里没有文件名,无法决定侧车名")
+            return self.fail("CAS文件中未包含源文件名,无法确定保存名称")
         dest = (body.get("dir") or "/").rstrip("/") + "/" + video + ".cas"
         ol_put(dest, cas_bytes)
         return self.ok({"path": dest})
@@ -1223,7 +1338,7 @@ button:disabled{opacity:.35}
 <button class="small grey" onclick="fillHome139()">填入移动云盘挂载目录</button></div>
 <input id="parent139" type="hidden" value="">
 <div class="mut" id="home139label"></div>
-<label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,把 .cas 也存到目标目录(视频旁边)</label>
+<label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,CAS文件保存至同目录</label>
 <button class="green" id="btnTy" onclick="doRestore('tianyi')">还原到天翼云盘</button>
 <button class="green" id="btnMb" onclick="doRestore('mobile')">还原到移动云盘</button>
 </div><div id="restoremsg" class="msg"></div>
@@ -1238,8 +1353,9 @@ button:disabled{opacity:.35}
 <div id="scanbtns" style="display:none">
 <div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选</button>
 <button class="small grey" onclick="scanCheckAll(false)">全不选</button>
-<span class="mut">目标目录用上方还原区</span></div>
-<button class="green" onclick="pushScanToRestore()">⬆ 推送到还原区</button>
+<span class="mut">推送时目标目录用上方还原区；原目录还原不使用目标目录</span></div>
+<div class="row"><button class="green" onclick="pushScanToRestore()">⬆ 推送到还原区</button>
+<button onclick="restoreScanInPlace()">原目录还原</button></div>
 <div id="scanrestoremsg" class="msg"></div>
 </div>
 </div></div>
@@ -1254,18 +1370,18 @@ button:disabled{opacity:.35}
 <span class="grow" id="curpath">/</span>
 <button class="small grey" onclick="loadList()">刷新</button></div>
 <div class="row"><button class="small grey" onclick="goHome('189')">跳到天翼挂载目录</button></div>
-<label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后把 .cas 上传回同目录</label>
+<label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后,CAS文件保存至同目录</label>
 <div id="entries"></div></div>
 <div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 CAS</h2>
-<div class="row"><label class="mut"><input type="checkbox" id="upback139" style="width:auto" checked> 生成后把 .cas 上传回同目录</label></div>
+<div class="row"><label class="mut"><input type="checkbox" id="upback139" style="width:auto" checked> 生成后,CAS文件保存至同目录</label></div>
 <div class="row"><button class="small grey" onclick="m139Roots()">🏠 目录</button>
 <button class="small grey" onclick="m139GoHome()">⭐ 默认目录</button>
 <span class="grow" id="m139crumbs">移动云盘</span>
 <button class="small grey" onclick="loadM139()">刷新</button></div>
-<div class="mut">直连 139 接口浏览,不经 OpenList;生成的 .cas 在下方任务里下载(旁存功能直连模式暂不支持)。</div>
+<div class="mut">通过 139 接口直接浏览,不经 OpenList;生成的CAS文件可在下方任务中下载,或按上方选项保存至同目录。</div>
 <div id="m139entries"></div></div>
 
-<div class="card"><h2>任务</h2><div id="jobs" class="mut">暂无</div></div>
+<div class="card"><h2>任务</h2><div id="jobs" class="mut">暂无</div><div id="jobsmsg" class="msg"></div></div>
 </div>
 
 <div id="tab-settings" style="display:none">
@@ -1319,7 +1435,6 @@ button:disabled{opacity:.35}
 <label class="mut">页面访问口令 <span id="pwstate" class="kv"></span></label>
 <input id="cfgpw" type="password" placeholder="留空 = 不修改">
 <label class="mut"><input type="checkbox" id="cfgpwclear" style="width:auto"> 清除访问口令(打开页面不再要口令)</label>
-<div class="mut">天翼 CAS 还到非天翼目录会先弹窗提醒;移动走直连选目录,不校验。</div>
 <button onclick="saveSettings()">保存设置</button>
 <div id="setmsg" class="msg"></div>
 <div class="mut">设置存群晖数据目录,所有设备共用;口令忘了可用 compose 的 WEB_PASSWORD 救急。</div>
@@ -1412,11 +1527,13 @@ async function scanCas(){
   if(!d.ok){ $('scanmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
   if(!d.data.length){ $('scanmsg').textContent='这个目录下没找到 .cas 文件'; scanItems=[]; $('scanlist').innerHTML=''; return; }
   scanItems = d.data.map(x=>({name:x.cas_name, b64:x.cas_b64, src:x.path,
+    srcType:x.source_type || (scanSrc==='139'? '139' : 'ol'),
+    srcDir:x.source_dir || '', srcParent:x.source_parent_id || '',
     info:{name:x.name, size:x.size, kind:x.kind, md5:x.md5, sliceMd5:x.sliceMd5, sha256:x.sha256}}));
   renderScan();
   $('restorebox').style.display='block';
   $('scanbtns').style.display='block';
-  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas</span> —— 在列表中勾选后,点「推送到还原区」';
+  $('scanmsg').innerHTML='<span class=good>找到 '+d.data.length+' 份 cas</span> —— 在列表中勾选后,可推送到还原区,或点「原目录还原」直接还原到 cas 所在目录';
 }
 function renderScan(){ setTimeout(refreshBtns, 0);
   $('scanlist').innerHTML = scanItems.map((it,i)=>
@@ -1442,6 +1559,45 @@ function pushScanToRestore(){
     +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'')
     +' —— 请在上方还原区选择目标目录后执行还原';
   window.scrollTo({top:0, behavior:'smooth'});
+}
+let scanRestoring=false;
+async function restoreScanInPlace(){
+  if(scanRestoring) return;
+  const picked=[];
+  scanItems.forEach((it,i)=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); if(c && c.checked) picked.push(i); });
+  if(!picked.length){ alert('请先在扫描列表中勾选 cas'); return; }
+  if(!confirm('将所选 '+picked.length+' 份 cas 分别还原到其所在目录,是否继续?')) return;
+  scanRestoring=true;
+  let okN=0, badN=0;
+  for(const i of picked){
+    const it=scanItems[i];
+    scanSetSt(i,' 原目录还原中…','mut');
+    try{
+      if(it.srcType==='139'){
+        if(!it.srcParent) throw new Error('缺少来源目录 ID');
+        const d=await api('/api/restore139',{cas_b64:it.b64,parent:it.srcParent,sidecar:false});
+        if(!d.ok) throw new Error(d.msg||'还原失败');
+        scanSetSt(i,' ✓ 已还原到原目录','good'); okN++;
+      } else {
+        const target=it.srcDir || (it.src.replace(/\/[^\/]*$/,'') || '/');
+        const d=await api('/api/restoreol',{cas_b64:it.b64,cas_name:it.name,target:target});
+        if(!d.ok){
+          const why=await failReason189(it);
+          throw new Error(why||d.msg||'还原失败');
+        }
+        scanSetSt(i,' 回查中…','mut');
+        await sleepMs(1500);
+        const ex=await api('/api/exists',{path:target,name:it.info.name});
+        if(ex.ok && ex.data.found){ scanSetSt(i,' ✓ 已还原到原目录','good'); okN++; }
+        else {
+          const why=await failReason189(it);
+          throw new Error(why||'文件不存在于云端,无法秒传');
+        }
+      }
+    }catch(e){ scanSetSt(i,' ✗ '+e.message,'err'); badN++; }
+  }
+  $('scanrestoremsg').innerHTML='<span class='+(badN? 'err':'good')+'>原目录还原完成: 成功 '+okN+' · 失败 '+badN+'</span>';
+  scanRestoring=false;
 }
 function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }
 const dz=$('dropzone');
@@ -1826,7 +1982,7 @@ async function restoreCore(to, items, setStatus){
       let note='✓ 已确认文件在 '+target;
       if($('sidecar').checked){
         const sc = await api('/api/sidecar',{dir:target,video_name:it.info.name,cas_b64:it.b64});
-        note += sc.ok? '(.cas 已存到同目录)' : '(.cas 存同目录失败: '+sc.msg+')';
+        note += sc.ok? '(CAS文件已保存至同目录)' : '(CAS文件保存至同目录失败: '+sc.msg+')';
       }
       setStatus(i,note,'good'); okN++;
     }
@@ -1949,6 +2105,7 @@ async function genCas(p,size){
   loadJobs();
 }
 const genResults={};
+let jobRecords={}, checkedJobIds=new Set();
 async function pushGenToRestore(jid, btn){
   const g=genResults[jid]; if(!g) return;
   if(!batchItems.some(b=>b.b64===g.b64)){
@@ -1963,30 +2120,47 @@ async function pushGenToRestore(jid, btn){
   showTab('restore');
   window.scrollTo({top:0, behavior:'smooth'});
 }
-function jobsAll(v){ document.querySelectorAll('.jobchk').forEach(c=>{ c.checked=v; }); }
+function jobsAll(v){ document.querySelectorAll('.jobchk').forEach(c=>{ c.checked=v; if(v) checkedJobIds.add(c.dataset.id); else checkedJobIds.delete(c.dataset.id); }); }
+function jobCheckChanged(c){ if(c.checked) checkedJobIds.add(c.dataset.id); else checkedJobIds.delete(c.dataset.id); }
 async function clearJobs(all){
   let ids=[];
   if(!all){
-    document.querySelectorAll('.jobchk').forEach(c=>{ if(c.checked) ids.push(c.dataset.id); });
+    ids=Array.from(checkedJobIds);
     if(!ids.length){ alert('请先勾选要清空的任务'); return; }
   }
   if(!confirm(all? '清空全部任务记录?(只清列表,不删除已生成的 cas 文件)' : '清空所选 '+ids.length+' 条任务记录?(只清列表,不删除已生成的 cas 文件)')) return;
   const d = await api('/api/jobs/clear', all? {all:true} : {ids:ids});
-  if(d.ok) loadJobs(); else alert(d.msg);
+  if(d.ok){ if(all) checkedJobIds.clear(); else ids.forEach(id=>checkedJobIds.delete(id)); loadJobs(); } else alert(d.msg);
+}
+async function deleteJobSources(){
+  const ids=Array.from(checkedJobIds);
+  if(!ids.length){ alert('请先勾选要删除源文件的生成任务'); return; }
+  const eligible=ids.filter(id=>{ const j=jobRecords[id]; return j && j.status==='done' && j.result && j.result.uploaded_to && !j.result.source_deleted; });
+  if(!eligible.length){ alert('所选任务中没有可删除源文件的任务(须生成完成,且 .cas 已保存回原目录)'); return; }
+  if(!confirm('将删除所选 '+eligible.length+' 个任务的源文件,仅保留 .cas。是否继续?')) return;
+  $('jobsmsg').textContent='正在删除源文件…';
+  const d=await api('/api/jobs/delete-source',{ids:eligible});
+  if(!d.ok){ $('jobsmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
+  const failed=(d.data.results||[]).filter(r=>!r.ok);
+  $('jobsmsg').innerHTML='<span class='+(failed.length? 'err':'good')+'>源文件删除完成: 成功 '+d.data.deleted+' · 失败 '+failed.length+'</span>'
+    +(failed.length? '<br>'+failed.map(r=>esc(r.msg)).join('<br>') : '');
+  loadJobs();
 }
 async function loadJobs(){
   const d = await api('/api/jobs');
   if(!d.ok) return;
-  if(!d.data.length){ $('jobs').innerHTML='暂无'; return; }
-  d.data.forEach(j=>{ if(j.status==='done'&&j.result&&j.result.cas_b64) genResults[j.id]={name:j.result.name, b64:j.result.cas_b64}; });
+  if(!d.data.length){ jobRecords={}; checkedJobIds.clear(); $('jobs').innerHTML='暂无'; return; }
+  jobRecords={};
+  d.data.forEach(j=>{ jobRecords[j.id]=j; if(j.status==='done'&&j.result&&j.result.cas_b64) genResults[j.id]={name:j.result.name, b64:j.result.cas_b64}; });
+  checkedJobIds=new Set(Array.from(checkedJobIds).filter(id=>jobRecords[id]));
   $('jobs').innerHTML =
-    '<div class=row><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
+    '<div class=row style="flex-wrap:wrap"><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small grey" onclick="deleteJobSources()">删除源文件</button><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
     + d.data.map(j=>
-    '<div style="margin:8px 0"><div><label><input type="checkbox" class="jobchk" data-id="'+j.id+'" style="width:auto"> '+esc(j.title)+'</label></div>'
+    '<div style="margin:8px 0"><div><label><input type="checkbox" class="jobchk" data-id="'+j.id+'" style="width:auto" onchange="jobCheckChanged(this)"'+(checkedJobIds.has(j.id)? ' checked':'')+'> '+esc(j.title)+'</label></div>'
     +(j.path? '<div class=kv>📁 '+esc(j.path)+'</div>':'')+
     '<div class=mut>'+esc(j.status)+(j.progress!=null? ' · '+j.progress+'%':'')+' · '+esc(j.message||'')+'</div>'+
     (j.progress!=null&&j.status==='running'? '<div class=bar><i style="width:'+j.progress+'%"></i></div>':'')+
-    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
+    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已保存至 '+esc(j.result.uploaded_to):'')+(j.result.source_deleted? ' · 源文件已删除':'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
     '</div>').join('');
 }
 status(); loadSettings(); loadList(); loadJobs(); refreshBtns();
