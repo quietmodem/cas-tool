@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 LIB_DIR = os.path.join(DATA_DIR, "caslib")
@@ -606,7 +606,7 @@ textarea{min-height:64px}
 <div class="row"><button class="small grey" onclick="goUp()">⬆ 上级</button>
 <span class="grow" id="curpath">/</span>
 <button class="small grey" onclick="loadList()">刷新</button></div>
-<label class="mut"><input type="checkbox" id="upback" style="width:auto"> 生成后把 .cas 上传回同目录</label>
+<label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后把 .cas 上传回同目录(视频旁边,推荐)</label>
 <div id="entries"></div></div>
 
 <div class="card"><h2>③ cas 库(存在群晖上)</h2><div id="lib"></div></div>
