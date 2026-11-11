@@ -485,6 +485,11 @@ def mkdir_139(basic, parent_id, name):
         "fileRenameMode": "force_rename"})
 
 
+def trash_139(basic, file_id):
+    """把一个 139 文件移入回收站(覆盖上传前清同名旧文件用)。"""
+    personal_post(basic, RECYCLE_TRASH_URL, {"fileIds": [file_id]})
+
+
 def build_139_part_infos(size: int, part_size: int = 100 * MIB):
     """分片计划:100MiB 一片,每片带 parallelHashCtx.partOffset —— 照
     OpenList 139 驱动 PartInfo 的原样;缺了它,139 的 create 不给

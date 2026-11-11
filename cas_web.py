@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.6.1"
+VERSION = "2.6.2"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -270,10 +270,15 @@ def run_gen_job(jid, ol_path, size, upload_back):
     _run_gen(jid, size, lambda: ol_download_iter(ol_path), name, up)
 
 
-def run_gen_job139(jid, file_id, name, size, parent="/", upload_back=True):
+def run_gen_job139(jid, file_id, name, size, parent="/", upload_back=True,
+                   overwrite=False):
     up = None
     if upload_back and parent:
         def up(cas_bytes):
+            if overwrite:
+                for it in ct.list_139_files(m139_basic(), parent):
+                    if it["name"] == name + ".cas" and not it["is_dir"]:
+                        ct.trash_139(m139_basic(), it["id"])
             ct.upload_139_bytes(m139_basic(), parent, name + ".cas", cas_bytes)
             return "移动云盘:" + name + ".cas(视频旁)"
     _run_gen(jid, size, lambda: m139_download_iter(file_id), name, up)
@@ -928,7 +933,8 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=run_gen_job139,
                                  args=(jid, fid, gname, gsize,
                                        str(body.get("parent") or "/"),
-                                       bool(body.get("upload_back", True))),
+                                       bool(body.get("upload_back", True)),
+                                       bool(body.get("overwrite"))),
                                  daemon=True).start()
                 return self.ok({"job_id": jid})
             if path == "/api/jobs/clear":
@@ -1865,8 +1871,13 @@ function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); loadM139(); }
 async function genCas139(i){
   const e=m139Items[i];
   const cur=m139Stack[m139Stack.length-1];
+  let up=$('upback139').checked, ow=false;
+  if(up && m139Items.some(x=>!x.is_dir && x.name===e.name+'.cas')){
+    if(confirm('源目录已有 '+e.name+'.cas,覆盖保存新 cas?\n确定=覆盖;取消=只生成、不上传回目录')) ow=true;
+    else up=false;
+  }
   const d = await api('/api/m139/gen',{file_id:e.id,name:e.name,size:e.size,
-    parent:cur? cur.id : '/', upload_back:$('upback139').checked,
+    parent:cur? cur.id : '/', upload_back:up, overwrite:ow,
     path:m139Stack.map(c=>c.name).join('/')+'/'+e.name});
   if(d.ok){ alert('已开始生成,看下方任务进度'); loadJobs(); } else alert(d.msg);
 }
@@ -1894,7 +1905,7 @@ function m139GoHome(){
   m139Stack=[{id:id,name:nm}];
   loadM139();
 }
-let genRoot=null;
+let genRoot=null, curEntries=[];
 async function loadList(){
   const roots=tianyiRoots();
   if(genRoot===null){
@@ -1908,6 +1919,7 @@ async function loadList(){
   }
   const d = await api('/api/list?path='+encodeURIComponent(curPath));
   if(!d.ok){ $('entries').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
+  curEntries = d.data.entries || [];
   $('curpath').textContent=curPath;
   $('entries').innerHTML = d.data.entries.map(e=>{
     const p = (curPath==='/'?'':curPath)+'/'+e.name;
@@ -1922,7 +1934,13 @@ function goUp(){
   if(curPath!=='/'){ curPath=curPath.split('/').slice(0,-1).join('/')||'/'; loadList(); }
 }
 async function genCas(p,size){
-  const d = await api('/api/gen',{path:p,size:size,upload_back:$('upback').checked});
+  let up=$('upback').checked;
+  if(up){
+    const nm=p.split('/').pop();
+    if(curEntries.some(e=>!e.is_dir && e.name===nm+'.cas')
+       && !confirm('源目录已有 '+nm+'.cas,覆盖保存新 cas?\n确定=覆盖;取消=只生成、不上传回目录')) up=false;
+  }
+  const d = await api('/api/gen',{path:p,size:size,upload_back:up});
   alert(d.ok? '已开始生成,进度看「任务」区' : d.msg);
   loadJobs();
 }

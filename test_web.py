@@ -26,7 +26,7 @@ FPATH = "/天翼云盘/" + FNAME
 SCAN_CAS = None  # main() 里用真实 cas_tool 编码生成
 
 captured = {"put": [], "seed": [], "create139": [], "put139": b"", "complete139": None,
-            "mkdir": []}
+            "mkdir": [], "trash139": []}
 
 
 class MockOL(BaseHTTPRequestHandler):
@@ -305,6 +305,15 @@ class Mock139(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if self.path == "/hcy/recyclebin/batchTrash":
+            captured["trash139"].extend(json.loads(raw).get("fileIds") or [])
+            data = json.dumps({"code": "0000", "data": {}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path == "/hcy/file/complete":
             captured["complete139"] = json.loads(raw)
             data = json.dumps({"code": "0000", "data": {}}).encode()
@@ -378,6 +387,7 @@ def main():
         "sha256": "b" * 64, "recover_pass": "", "create_time": "1794055893"})
     ct.FILE_CREATE_URL = "http://127.0.0.1:%d/hcy/file/create" % mock_139.server_address[1]
     ct.FILE_COMPLETE_URL = "http://127.0.0.1:%d/hcy/file/complete" % mock_139.server_address[1]
+    ct.RECYCLE_TRASH_URL = "http://127.0.0.1:%d/hcy/recyclebin/batchTrash" % mock_139.server_address[1]
     ct.WEB189_URL = "http://127.0.0.1:%d" % mock_189.server_address[1]
     ct.UPLOAD189_URL = "http://127.0.0.1:%d" % mock_189.server_address[1]
     ct.FILE_LIST_URL = "http://127.0.0.1:%d/hcy/file/list" % mock_139.server_address[1]
@@ -595,6 +605,23 @@ def main():
     st, d2, _ = req("GET", base + "/api/jobs")
     check("全部清空生效", d["ok"] and d2["data"] == [], d)
     check("任务区有清空按钮", b"clearJobs" in html)
+
+    # ff) v2.6.2:139 生成覆盖旁存(先删同名旧 cas 再上传)
+    st, d, _ = req("POST", base + "/api/m139/gen",
+                   {"file_id": "CAS1", "name": "样本",
+                    "size": len(MOCK_CAS_BYTES), "parent": "D1",
+                    "upload_back": True, "overwrite": True})
+    jid = d["data"]["job_id"]
+    job = None
+    for _ in range(60):
+        st, d, _ = req("GET", base + "/api/jobs")
+        job = [j for j in d["data"] if j["id"] == jid][0]
+        if job["status"] != "running":
+            break
+        time.sleep(0.5)
+    check("覆盖生成:旧 cas 先删后传", job and job["status"] == "done"
+          and "CAS1" in captured["trash139"]
+          and bool(job["result"].get("uploaded_to")), job)
     st, d, _ = req("POST", base + "/api/check189", {"cas_b64": dd_b64})
     check("检测:云端有文件可秒传", d["ok"] and d["data"]["state"] == "ok", d)
     _raw = MOCK189["headers"][-1] if MOCK189["headers"] else {}
