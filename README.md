@@ -147,7 +147,12 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v1.7.0(2026-11-11)。Web v1.7.0:① 配置全部搬到
+版本: CLI v1.0.0 / Web v1.8.0(2026-11-11)。Web v1.8.0:还原前目录校验——
+设置页新增天翼/移动「云盘路径」清单(可多个,一行一个,可点选追加;主目录
+自动算作本云路径);经 OpenList 还原时,天翼 cas 的目标不在天翼路径下、
+移动 cas 的目标不在移动路径下、双填 cas 两边都不在,会先弹窗列出提醒,
+确认后才继续;清单留空的云不校验。直调 139 还原不涉及 OpenList 路径,不校验。
+Web v1.7.0:① 配置全部搬到
 后台:OpenList 地址/Token、移动凭据、页面口令都在「设置」页里配(存服务端
 settings.json,口令只存哈希,密钥不回显明文),页面设置优先于环境变量,
 环境变量退为兜底(口令忘了可用 compose 里的 WEB_PASSWORD 救急登录);

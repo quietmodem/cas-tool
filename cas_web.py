@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -303,15 +303,20 @@ def settings_path():
 
 SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
                  "cas139_phone", "cas139_auth", "web_pw_hash")
+PATH_KEYS = ("tianyi_paths", "mobile_paths")
 
 
 def load_settings():
     try:
         with open(settings_path(), encoding="utf-8") as f:
             d = json.load(f)
-        return {k: str(d.get(k) or "") for k in SETTINGS_KEYS}
     except Exception:  # noqa: BLE001
-        return {k: "" for k in SETTINGS_KEYS}
+        d = {}
+    out = {k: str(d.get(k) or "") for k in SETTINGS_KEYS}
+    for k in PATH_KEYS:
+        v = d.get(k) or []
+        out[k] = [str(x).strip().rstrip("/") or "/" for x in v if str(x).strip()]
+    return out
 
 
 def store_settings(data):
@@ -355,6 +360,22 @@ def update_settings(body):
             if v and not v.startswith("/"):
                 raise ValueError("主目录要以 / 开头(OpenList 里的完整路径),或留空")
             cur[k] = v.rstrip("/") or ("/" if v else "")
+    for k in PATH_KEYS:
+        if k in body:
+            raw = body.get(k) or []
+            if isinstance(raw, str):
+                raw = raw.splitlines()
+            vals = []
+            for x in raw:
+                v = str(x).strip()
+                if not v:
+                    continue
+                if not v.startswith("/"):
+                    raise ValueError("云盘路径要以 / 开头:%s" % v)
+                v = v.rstrip("/") or "/"
+                if v not in vals:
+                    vals.append(v)
+            cur[k] = vals
     if "openlist_url" in body:
         cur["openlist_url"] = str(body.get("openlist_url") or "").strip().rstrip("/")
     if "cas139_phone" in body:
@@ -380,6 +401,7 @@ def public_settings(s=None):
     """给页面看的设置:密钥只报已设置/未设置,绝不回显明文。"""
     s = s or load_settings()
     return {"tianyi_home": s["tianyi_home"], "mobile_home": s["mobile_home"],
+            "tianyi_paths": s["tianyi_paths"], "mobile_paths": s["mobile_paths"],
             "openlist_url": s["openlist_url"],
             "openlist_token_set": bool(s["openlist_token"]
                                        or os.environ.get("OPENLIST_TOKEN")),
@@ -807,6 +829,13 @@ textarea{min-height:64px}
 <label class="mut">移动云盘主目录</label>
 <div class="row"><input id="home139" class="grow" placeholder="如 /TV/移动云盘">
 <button class="small grey" onclick="togglePicker('home139')">📁 选目录</button></div>
+<label class="mut">天翼云盘路径(可多个,一行一个;还原校验用)</label>
+<textarea id="paths189" placeholder="/TV/天翼云盘在线&#10;/天翼云盘"></textarea>
+<button class="small grey" onclick="togglePicker('append:paths189')">📁 添加一个目录</button>
+<label class="mut">移动云盘路径(可多个,一行一个)</label>
+<textarea id="paths139" placeholder="/TV/移动云盘&#10;/移动云盘"></textarea>
+<button class="small grey" onclick="togglePicker('append:paths139')">📁 添加一个目录</button>
+<div class="mut">校验规则:天翼 cas 还到不属于天翼的目录、移动 cas 还到不属于移动的目录,还原前会弹窗提醒(主目录自动算作本云路径,不用重复填)。清单留空 = 不校验。</div>
 <button onclick="saveSettings()">保存设置</button>
 <div id="setmsg" class="msg"></div>
 <div class="mut">所有设置保存在群晖的工具数据目录(settings.json),所有设备共用同一份。docker-compose 里的同名环境变量若也填了,页面设置优先,环境变量只作兜底——访问口令忘了时,在 compose 里临时加 WEB_PASSWORD 就能救急登录。</div>
@@ -897,6 +926,7 @@ async function scanRestore(to){
   scanItems.forEach((it,i)=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); if(c && c.checked){ items.push(it); idx.push(i); } });
   if(!items.length){ alert('先在扫描列表里勾选要还原的 cas'); return; }
   const r = await restoreCore(to, items, (j,txt,cls)=>scanSetSt(idx[j],txt,cls));
+  if(!r){ $('scanrestoremsg').innerHTML='已取消还原'; return; }
   $('scanrestoremsg').innerHTML='还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标目录: '+esc(r.target)+')';
 }
 function setSt(i,txt,cls){ const el=$('st'+i); if(el) el.innerHTML='<span class='+cls+'>'+esc(txt)+'</span>'; }
@@ -914,12 +944,16 @@ async function loadSettings(){
   SETTINGS=d.data;
   $('home189').value=SETTINGS.tianyi_home||''; $('home139').value=SETTINGS.mobile_home||'';
   $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
+  $('paths189').value=(SETTINGS.tianyi_paths||[]).join('\n');
+  $('paths139').value=(SETTINGS.mobile_paths||[]).join('\n');
   $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置)' : '(未设置)';
   $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置)' : '(未设置)';
   $('pwstate').textContent = SETTINGS.web_password_set? '(已设置)' : '(未设置)';
 }
 async function saveSettings(){
   const body={tianyi_home:$('home189').value.trim(), mobile_home:$('home139').value.trim(),
+    tianyi_paths:$('paths189').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    mobile_paths:$('paths139').value.split('\n').map(s=>s.trim()).filter(Boolean),
     openlist_url:$('cfgurl').value.trim(), openlist_token:$('cfgtoken').value.trim(),
     cas139_phone:$('cfgphone').value.trim(), cas139_auth:$('cfgauth').value.trim(),
     web_password:$('cfgpw').value, clear_web_password:$('cfgpwclear').checked};
@@ -938,7 +972,7 @@ function goHome(which){
 function togglePicker(targetId){
   if(targetId) pickerTarget=targetId;
   const p=$('picker'); const show=p.style.display==='none';
-  if(show && targetId){ pickerPath = ($(pickerTarget).value||'').trim() || '/'; }
+  if(show && targetId && targetId.indexOf('append:')!==0){ pickerPath = ($(pickerTarget).value||'').trim() || '/'; }
   p.style.display=show?'flex':'none'; if(show) loadPicker();
 }
 let pickerDirs=[];
@@ -970,13 +1004,61 @@ function pickerGo(p){ pickerPath=p; $('pickerfilter').value=''; loadPicker(); }
 function pickerEnter(p){ pickerGo(p); }
 function pickerUp(){ if(pickerPath!=='/') pickerGo(pickerPath.split('/').slice(0,-1).join('/')||'/'); }
 function pickerHome(which){ const v=which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home; if(v){ pickerGo(v); } else alert('还没设置主目录,先到「设置」页设置'); }
-function pickerPick(p){ $(pickerTarget).value=p; $('picker').style.display='none'; }
+function pickerPick(p){
+  if(pickerTarget.indexOf('append:')===0){
+    const ta=$(pickerTarget.slice(7));
+    const lines=ta.value.split('\n').map(s=>s.trim()).filter(Boolean);
+    if(lines.indexOf(p)<0) lines.push(p);
+    ta.value=lines.join('\n');
+  } else { $(pickerTarget).value=p; }
+  $('picker').style.display='none';
+}
 function pickerUse(){ pickerPick(pickerPath); }
 const sleepMs=ms=>new Promise(r=>setTimeout(r,ms));
+function cloudPathSet(which){
+  const list = (which==='189'? SETTINGS.tianyi_paths : SETTINGS.mobile_paths) || [];
+  const home = which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home;
+  const set = list.slice();
+  if(home && set.indexOf(home)<0) set.push(home);
+  return set;
+}
+function inCloud(target, which){
+  const set = cloudPathSet(which);
+  if(!set.length) return null;
+  const t = (target||'/').replace(/\/+$/,'') || '/';
+  return set.some(p=>{ const q=(p||'/').replace(/\/+$/,'') || '/'; return q==='/' || t===q || t.indexOf(q+'/')===0; });
+}
+function itemCloud(it){
+  const k=(it.info&&it.info.kind)||'';
+  if(k.indexOf('both')===0) return 'both';
+  if(k.indexOf('tianyi')===0) return '189';
+  if(k.indexOf('mobile')===0) return '139';
+  return '';
+}
 async function restoreCore(to, items, setStatus){
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   let target = $('target189').value.trim();
   if(!target) target = (to==='tianyi'? SETTINGS.tianyi_home : to==='openlist'? SETTINGS.mobile_home : '') || '/';
+  if(to!=='mobile'){
+    const warns=[];
+    for(const it of items){
+      if(!it.info || it._skip) continue;
+      const c=itemCloud(it);
+      if(to==='tianyi'){
+        if(inCloud(target,'189')===false) warns.push('《'+it.info.name+'》要还原到天翼,但目标目录 '+target+' 不在设置的天翼云盘路径下');
+      } else if(c==='189'){
+        if(inCloud(target,'189')===false) warns.push('《'+it.info.name+'》是天翼 cas,目标目录 '+target+' 不在设置的天翼云盘路径下');
+      } else if(c==='139'){
+        if(inCloud(target,'139')===false) warns.push('《'+it.info.name+'》是移动 cas,目标目录 '+target+' 不在设置的移动云盘路径下');
+      } else if(c==='both'){
+        if(inCloud(target,'189')===false && inCloud(target,'139')===false) warns.push('《'+it.info.name+'》是双填 cas,目标目录 '+target+' 既不在天翼也不在移动云盘路径下');
+      }
+    }
+    if(warns.length){
+      const shown = warns.slice(0,5).join('\n') + (warns.length>5? '\n…等共 '+warns.length+' 条' : '');
+      if(!confirm('⚠ 目录可能选错了:\n\n'+shown+'\n\n仍要继续还原吗？')) return null;
+    }
+  }
   let okN=0, badN=0;
   for(let i=0;i<items.length;i++){
     const it=items[i];
@@ -1006,6 +1088,7 @@ async function doRestore(to){
   if(!batchItems.length){ alert('先解析 cas'); return; }
   batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); it._skip = c? !c.checked : false; });
   const r = await restoreCore(to, batchItems, setSt);
+  if(!r){ $('restoremsg').innerHTML='已取消还原'; return; }
   $('restoremsg').innerHTML='批量还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标目录: '+esc(r.target)+')';
 }
 async function loadList(){

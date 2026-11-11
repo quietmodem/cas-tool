@@ -187,6 +187,8 @@ def main():
           [b'id="scanpath"', b"/api/scan", b"scanCas", b'class="overlay"', b'class="sheet"']))
     check("首页含扫描独立列表与后台配置区", all(x in html for x in
           [b"renderScan", b"scanRestore", b'id="scanlist"', b'id="cfgurl"', b'id="cfgtoken"', b'id="cfgpw"']))
+    check("首页含云盘路径校验", all(x in html for x in
+          [b'id="paths189"', b'id="paths139"', b"cloudPathSet", b"inCloud", b"itemCloud"]))
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
@@ -324,6 +326,14 @@ def main():
     check("设置回读一致", d["ok"] and d["data"]["mobile_home"] == "/TV/移动云盘", d)
     st, d, _ = req("POST", base + "/api/settings", {"tianyi_home": "相对路径", "mobile_home": ""})
     check("设置拒绝无斜杠路径", not d["ok"], d)
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"tianyi_paths": ["/TV/天翼云盘在线/", "/天翼云盘", "/TV/天翼云盘在线"],
+                    "mobile_paths": "/TV/移动云盘\n/移动云盘"})
+    check("云盘路径清单保存(去重/归一)", d["ok"]
+          and d["data"]["tianyi_paths"] == ["/TV/天翼云盘在线", "/天翼云盘"]
+          and d["data"]["mobile_paths"] == ["/TV/移动云盘", "/移动云盘"], d)
+    st, d, _ = req("POST", base + "/api/settings", {"tianyi_paths": ["相对路径"]})
+    check("云盘路径拒绝无斜杠", not d["ok"], d)
 
     # n) 配置存后台:页面设置优先、密钥不回显、口令可设可清
     st, d, _ = req("POST", base + "/api/settings",
