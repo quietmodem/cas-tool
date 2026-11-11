@@ -156,6 +156,9 @@ def main():
           ["选目录".encode(), b'id="picker"', b'id="savecas"', b"pickerPick", b"loadPicker"]))
     check("首页含批量/zip 支持", all(x in html for x in
           [b"multiple", b"unzipcas", b"batchItems", b"/api/exists", b'id="sidecar"']))
+    check("首页含三选项卡与设置页", all(x in html for x in
+          [b'id="tab-restore"', b'id="tab-gen"', b'id="tab-settings"', b"switchTab",
+           b'id="home189"', b'id="home139"', b"/api/settings"]))
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
@@ -285,6 +288,18 @@ def main():
     check("sidecar 存到视频旁边", d["ok"] and len(captured["put"]) == nput + 1
           and urllib.parse.unquote(captured["put"][-1][0]) == "/天翼云盘/中转/" + FNAME + ".cas"
           and captured["put"][-1][1] == sample_bytes, d)
+
+    # l) 设置:主目录读写
+    st, d, _ = req("GET", base + "/api/settings")
+    check("设置默认为空", d["ok"] and d["data"] == {"tianyi_home": "", "mobile_home": ""}, d)
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"tianyi_home": "/TV/天翼云盘在线/", "mobile_home": "/TV/移动云盘"})
+    check("设置保存(尾斜杠归一)", d["ok"] and d["data"]["tianyi_home"] == "/TV/天翼云盘在线"
+          and d["data"]["mobile_home"] == "/TV/移动云盘", d)
+    st, d, _ = req("GET", base + "/api/settings")
+    check("设置回读一致", d["ok"] and d["data"]["mobile_home"] == "/TV/移动云盘", d)
+    st, d, _ = req("POST", base + "/api/settings", {"tianyi_home": "相对路径", "mobile_home": ""})
+    check("设置拒绝无斜杠路径", not d["ok"], d)
 
     # i) 口令保护
     cas_web.WEB_PASSWORD = "pw123"

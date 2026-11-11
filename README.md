@@ -147,7 +147,11 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v1.3.1(2026-11-11)。Web v1.3.1:经 OpenList 的
+版本: CLI v1.0.0 / Web v1.4.0(2026-11-11)。Web v1.4.0:界面改为三个
+选项卡——「cas 还原」(含 cas 库)、「生成 cas」(含任务)、「设置」;设置页
+可保存天翼/移动主目录(存服务端 data/settings.json,全设备共用),还原时
+目标留空自动按按钮取对应主目录,生成页可一键跳到主目录,目录选择器全页共用。
+Web v1.3.1:经 OpenList 的
 还原在确认视频已落盘后,可把 .cas 作为侧车存到目标目录视频旁边
 (<视频名>.cas,默认开;cas 库的还原同样支持)。另注:OpenList 主线种子
 秒传的驱动清单里没有 139,移动云盘无法经 OpenList 种子还原(上游未实现),

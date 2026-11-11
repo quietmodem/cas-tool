@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 LIB_DIR = os.path.join(DATA_DIR, "caslib")
@@ -311,6 +311,31 @@ def unzip_cas(zip_bytes):
     return items
 
 
+def settings_path():
+    return os.path.join(DATA_DIR, "settings.json")
+
+
+def load_settings():
+    try:
+        with open(settings_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        return {"tianyi_home": str(d.get("tianyi_home") or ""),
+                "mobile_home": str(d.get("mobile_home") or "")}
+    except Exception:  # noqa: BLE001
+        return {"tianyi_home": "", "mobile_home": ""}
+
+
+def save_settings(tianyi_home, mobile_home):
+    for v in (tianyi_home, mobile_home):
+        if v and not v.startswith("/"):
+            raise ValueError("主目录要以 / 开头(OpenList 里的完整路径),或留空")
+    data = {"tianyi_home": tianyi_home.rstrip("/") or ("/" if tianyi_home else ""),
+            "mobile_home": mobile_home.rstrip("/") or ("/" if mobile_home else "")}
+    with open(settings_path(), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    return data
+
+
 def cas_summary(cas_bytes):
     obj = ct.decode_cas_bytes(cas_bytes)
     return {
@@ -398,6 +423,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/status":
                 return self.api_status()
+            if path == "/api/settings":
+                return self.ok(load_settings())
             if path == "/api/list":
                 return self.api_list(qs)
             if path == "/api/jobs":
@@ -431,6 +458,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/inspect":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
                 return self.ok(cas_summary(cas_bytes))
+            if path == "/api/settings":
+                try:
+                    return self.ok(save_settings(str(body.get("tianyi_home") or "").strip(),
+                                                 str(body.get("mobile_home") or "").strip()))
+                except ValueError as e:
+                    return self.fail(str(e))
             if path == "/api/unzipcas":
                 try:
                     items = unzip_cas(base64.b64decode(body.get("zip_b64", "")))
@@ -632,11 +665,29 @@ textarea{min-height:64px}
 .msg{white-space:pre-wrap;word-break:break-all;font-size:14px;margin-top:8px}
 .err{color:#ff3b30}.good{color:#248a3d}
 .kv{font-size:13px;color:#666;word-break:break-all}
+.tabbar{display:flex;gap:8px;margin:12px 0 0}
+.tabbtn{flex:1;background:#e5e5ea;color:#111}
+.tabbtn.on{background:#007aff;color:#fff}
+@media (prefers-color-scheme:dark){.tabbtn{background:#2c2c2e;color:#eee}.tabbtn.on{background:#007aff;color:#fff}}
 </style></head><body><div class="wrap">
 <h1>🗂 CAS 双云工具 <span class="mut" id="ver"></span></h1>
 <div class="card"><div id="status" class="msg">检查连接中…</div></div>
 
-<div class="card"><h2>① 还原一份 .cas</h2>
+<div class="tabbar">
+<button id="tabbtn-restore" class="tabbtn on" onclick="switchTab('restore')">cas 还原</button>
+<button id="tabbtn-gen" class="tabbtn" onclick="switchTab('gen')">生成 cas</button>
+<button id="tabbtn-settings" class="tabbtn" onclick="switchTab('settings')">设置</button>
+</div>
+
+<div id="picker" class="card" style="display:none">
+<div class="row"><button class="small grey" onclick="pickerUp()">⬆ 上级</button><span class="grow" id="pickerpath">/</span></div>
+<div id="pickerlist"></div>
+<div class="row"><button class="small green" onclick="pickerUse()">✔ 用当前目录</button>
+<button class="small grey" onclick="togglePicker()">关闭</button></div>
+</div>
+
+<div id="tab-restore">
+<div class="card"><h2>还原 .cas</h2>
 <input type="file" id="casfile" accept=".cas,.txt,.zip" multiple>
 <div class="mut">可多选 .cas,也可选含多个 .cas 的 .zip 压缩包</div>
 <textarea id="castext" placeholder="或把 .cas 的内容(Base64 文本)粘贴到这里"></textarea>
@@ -644,32 +695,48 @@ textarea{min-height:64px}
 <button class="grey" onclick="saveToLib()">存入 cas 库</button>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
-<div class="row"><input id="target189" class="grow" placeholder="OpenList 目标目录(不填 = 根目录 /;如 /天翼云盘/电影)">
-<button class="small grey" onclick="togglePicker()">📁 选目录</button></div>
-<div id="picker" style="display:none">
-<div class="row"><button class="small grey" onclick="pickerUp()">⬆ 上级</button><span class="grow" id="pickerpath">/</span></div>
-<div id="pickerlist"></div>
-<div class="row"><button class="small green" onclick="pickerUse()">✔ 用当前目录</button>
-<button class="small grey" onclick="togglePicker()">关闭</button></div>
-</div>
+<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼主目录,OL按钮用移动主目录)">
+<button class="small grey" onclick="togglePicker('target189')">📁 选目录</button></div>
+<div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼主目录</button>
+<button class="small grey" onclick="fillHome('139')">填入移动主目录</button></div>
 <input id="parent139" value="/" placeholder="移动直调时父目录 fileId(根目录填 /)">
 <label class="mut"><input type="checkbox" id="savecas" style="width:auto" checked> 还原时同时把这份 .cas 存入 cas 库</label>
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原确认成功后,把 .cas 也存到目标目录(视频旁边,仅经 OpenList 的还原)</label>
 <button class="green" onclick="doRestore('mobile')">还原到移动(直调139接口)</button>
 <button class="green" onclick="doRestore('tianyi')">还原到天翼(经OpenList)</button>
-<button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录(移动挂载可试)</button>
+<button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录</button>
 </div><div id="restoremsg" class="msg"></div></div>
 
-<div class="card"><h2>② 浏览网盘 · 生成 .cas</h2>
+<div class="card"><h2>cas 库(存在群晖上)</h2><div id="lib"></div></div>
+</div>
+
+<div id="tab-gen" style="display:none">
+<div class="card"><h2>浏览网盘 · 生成 .cas</h2>
 <div class="row"><button class="small grey" onclick="goUp()">⬆ 上级</button>
 <span class="grow" id="curpath">/</span>
 <button class="small grey" onclick="loadList()">刷新</button></div>
+<div class="row"><button class="small grey" onclick="goHome('189')">跳到天翼主目录</button>
+<button class="small grey" onclick="goHome('139')">跳到移动主目录</button></div>
 <label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后把 .cas 上传回同目录(视频旁边,推荐)</label>
 <div id="entries"></div></div>
 
-<div class="card"><h2>③ cas 库(存在群晖上)</h2><div id="lib"></div></div>
+<div class="card"><h2>任务</h2><div id="jobs" class="mut">暂无</div></div>
+</div>
 
-<div class="card"><h2>④ 任务</h2><div id="jobs" class="mut">暂无</div></div>
+<div id="tab-settings" style="display:none">
+<div class="card"><h2>主目录设置</h2>
+<div class="mut">设置后:还原时目标目录留空会按按钮自动用对应主目录;生成页也能一键跳过去,不用每次翻 OpenList 的目录树。</div>
+<label class="mut">天翼云盘主目录</label>
+<div class="row"><input id="home189" class="grow" placeholder="如 /TV/天翼云盘在线">
+<button class="small grey" onclick="togglePicker('home189')">📁 选目录</button></div>
+<label class="mut">移动云盘主目录</label>
+<div class="row"><input id="home139" class="grow" placeholder="如 /TV/移动云盘">
+<button class="small grey" onclick="togglePicker('home139')">📁 选目录</button></div>
+<button onclick="saveSettings()">保存设置</button>
+<div id="setmsg" class="msg"></div>
+<div class="mut">主目录保存在群晖的工具数据目录里,所有设备共用同一份。账号凭据(OPENLIST_URL / TOKEN、CAS139_PHONE / AUTH)和页面口令仍在 docker-compose.yml 里配置,不在这里。</div>
+</div>
+</div>
 </div>
 <script>
 let curPath='/', curCasB64='', curCasName='';
@@ -735,9 +802,36 @@ async function saveToLib(){
   $('restoremsg').innerHTML = '<span class=good>已存入 cas 库 '+n+' 份</span>';
   if(n) loadLib();
 }
-let pickerPath='/';
-function togglePicker(){
+let pickerPath='/', pickerTarget='target189';
+function switchTab(name){
+  for(const n of ['restore','gen','settings']){
+    $('tab-'+n).style.display = n===name? 'block':'none';
+    $('tabbtn-'+n).classList.toggle('on', n===name);
+  }
+}
+let SETTINGS={tianyi_home:'',mobile_home:''};
+async function loadSettings(){
+  const d = await api('/api/settings');
+  if(d.ok){ SETTINGS=d.data; $('home189').value=SETTINGS.tianyi_home||''; $('home139').value=SETTINGS.mobile_home||''; }
+}
+async function saveSettings(){
+  const body={tianyi_home:$('home189').value.trim(), mobile_home:$('home139').value.trim()};
+  const d = await api('/api/settings', body);
+  $('setmsg').innerHTML = d.ok? '<span class=good>已保存</span>' : '<span class=err>'+esc(d.msg)+'</span>';
+  if(d.ok) SETTINGS=body;
+}
+function fillHome(which){
+  const v = which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home;
+  if(v){ $('target189').value=v; } else { alert('还没设置主目录,先到「设置」页设置'); }
+}
+function goHome(which){
+  const v = which==='189'? SETTINGS.tianyi_home : SETTINGS.mobile_home;
+  if(v){ curPath=v; loadList(); } else { alert('还没设置主目录,先到「设置」页设置'); }
+}
+function togglePicker(targetId){
+  if(targetId) pickerTarget=targetId;
   const p=$('picker'); const show=p.style.display==='none';
+  if(show && targetId){ pickerPath = ($(pickerTarget).value||'').trim() || '/'; }
   p.style.display=show?'block':'none'; if(show) loadPicker();
 }
 async function loadPicker(){
@@ -753,13 +847,14 @@ async function loadPicker(){
 }
 function pickerEnter(p){ pickerPath=p; loadPicker(); }
 function pickerUp(){ if(pickerPath!=='/'){ pickerPath=pickerPath.split('/').slice(0,-1).join('/')||'/'; loadPicker(); } }
-function pickerPick(p){ $('target189').value=p; $('picker').style.display='none'; }
+function pickerPick(p){ $(pickerTarget).value=p; $('picker').style.display='none'; }
 function pickerUse(){ pickerPick(pickerPath); }
 const sleepMs=ms=>new Promise(r=>setTimeout(r,ms));
 async function doRestore(to){
   if(!batchItems.length){ alert('先解析 cas'); return; }
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
-  const target = $('target189').value.trim() || '/';
+  let target = $('target189').value.trim();
+  if(!target) target = (to==='tianyi'? SETTINGS.tianyi_home : to==='openlist'? SETTINGS.mobile_home : '') || '/';
   let okN=0, badN=0;
   for(let i=0;i<batchItems.length;i++){
     const it=batchItems[i];
@@ -819,7 +914,7 @@ function dlLib(f){ location.href='/api/lib/download?name='+encodeURIComponent(f)
 async function delLib(f){ if(!confirm('删除 '+f+' ?'))return; const d=await api('/api/lib/delete',{file:f}); loadLib(); }
 async function libRestore(f,to){
   let body={file:f,to:to};
-  if(to==='tianyi'||to==='openlist'){ let t=($('target189').value||'').trim(); if(!t){ t=prompt('OpenList 目标目录(天翼或移动挂载路径)','/天翼云盘/'); if(!t)return; } body.target=t; }
+  if(to==='tianyi'||to==='openlist'){ let t=($('target189').value||'').trim() || (to==='tianyi'? SETTINGS.tianyi_home : SETTINGS.mobile_home); if(!t){ t=prompt('OpenList 目标目录(天翼或移动挂载路径)','/'); if(!t)return; } body.target=t; }
   else { const p=prompt('移动父目录 fileId(根目录 /)','/'); if(p===null)return; body.parent=p; }
   const d = await api('/api/lib/restore',body);
   if(d.ok && (to==='tianyi'||to==='openlist') && $('sidecar').checked){
@@ -840,7 +935,7 @@ async function loadJobs(){
     '</div>').join('');
   if(d.data.some(j=>j.status==='done')) loadLib();
 }
-status(); loadList(); loadLib(); loadJobs();
+status(); loadSettings(); loadList(); loadLib(); loadJobs();
 setInterval(loadJobs, 2500);
 </script></body></html>"""
 
