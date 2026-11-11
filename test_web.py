@@ -566,6 +566,35 @@ def main():
                    {"tianyi_session_key": "SK-TEST"})
     check("SessionKey 已存", d["ok"] and d["data"]["tianyi_session_key_set"], d)
     MOCK189["mode"] = "exists"
+
+    # ee) v2.6.1:任务历史持久化 + 清空 + 路径展示
+    st, d, _ = req("POST", base + "/api/m139/gen",
+                   {"file_id": fid139, "name": M139_FILE, "size": len(CONTENT),
+                    "parent": "D1", "upload_back": False,
+                    "path": "视频/" + M139_FILE})
+    jid_ee = d["data"]["job_id"]
+    job = None
+    for _ in range(60):
+        st, d, _ = req("GET", base + "/api/jobs")
+        job = [j for j in d["data"] if j["id"] == jid_ee][0]
+        if job["status"] != "running":
+            break
+        time.sleep(0.5)
+    check("任务带文件路径", job and job.get("path") == "视频/" + M139_FILE, job)
+    cas_web.JOBS.clear()
+    cas_web._load_jobs()
+    st, d, _ = req("GET", base + "/api/jobs")
+    kept = [j for j in d["data"] if j["id"] == jid_ee]
+    check("重启后任务历史还在", bool(kept) and kept[0]["status"] == "done"
+          and bool(kept[0]["result"]["cas_b64"]), d["data"][:1])
+    st, d, _ = req("POST", base + "/api/jobs/clear", {"ids": [jid_ee]})
+    st, d2, _ = req("GET", base + "/api/jobs")
+    check("清空已选生效", d["ok"] and d["data"]["removed"] == 1
+          and all(j["id"] != jid_ee for j in d2["data"]), d)
+    st, d, _ = req("POST", base + "/api/jobs/clear", {"all": True})
+    st, d2, _ = req("GET", base + "/api/jobs")
+    check("全部清空生效", d["ok"] and d2["data"] == [], d)
+    check("任务区有清空按钮", b"clearJobs" in html)
     st, d, _ = req("POST", base + "/api/check189", {"cas_b64": dd_b64})
     check("检测:云端有文件可秒传", d["ok"] and d["data"]["state"] == "ok", d)
     _raw = MOCK189["headers"][-1] if MOCK189["headers"] else {}

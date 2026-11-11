@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.6.0"
+VERSION = "2.6.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -146,12 +146,55 @@ JOBS = {}
 JOBS_LOCK = threading.Lock()
 
 
-def job_new(kind, title):
+def _jobs_file():
+    return os.path.join(DATA_DIR, "jobs.json")
+
+
+_JOBS_SAVE_LAST = [0.0]
+
+
+def _save_jobs(force=False):
+    """任务历史落盘(保留最近 100 条),刷新/重启不丢;只存记录,
+    不涉及任何已生成的文件。"""
+    now = time.time()
+    if not force and now - _JOBS_SAVE_LAST[0] < 2:
+        return
+    _JOBS_SAVE_LAST[0] = now
+    try:
+        with JOBS_LOCK:
+            items = sorted(JOBS.values(), key=lambda j: -j["ts"])[:100]
+        tmp = _jobs_file() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False)
+        os.replace(tmp, _jobs_file())
+    except OSError:
+        pass
+
+
+def _load_jobs():
+    try:
+        with open(_jobs_file(), encoding="utf-8") as f:
+            items = json.load(f)
+    except (OSError, ValueError):
+        return
+    with JOBS_LOCK:
+        for j in items:
+            if j.get("status") == "running":
+                j["status"] = "error"
+                j["message"] = "服务重启,任务中断"
+            JOBS[j["id"]] = j
+
+
+_load_jobs()
+
+
+def job_new(kind, title, path=""):
     jid = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
         JOBS[jid] = {"id": jid, "kind": kind, "title": title, "status": "running",
                      "progress": None, "message": "", "result": None,
-                     "ts": int(time.time())}
+                     "path": path, "ts": int(time.time())}
+    _save_jobs(force=True)
     return jid
 
 
@@ -159,6 +202,7 @@ def job_update(jid, **kw):
     with JOBS_LOCK:
         if jid in JOBS:
             JOBS[jid].update(kw)
+    _save_jobs(force=("status" in kw))
 
 
 def _run_gen(jid, size, opener, name, uploader):
@@ -772,7 +816,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/jobs":
                 with JOBS_LOCK:
                     jobs = sorted(JOBS.values(), key=lambda j: -j["ts"])
-                return self.ok(jobs[:30])
+                return self.ok(jobs[:100])
             return self.fail("无此路径", status=404)
         except Exception as e:  # noqa: BLE001
             return self.fail(e)
@@ -879,13 +923,26 @@ class Handler(BaseHTTPRequestHandler):
                 gsize = int(body.get("size") or 0)
                 if not fid or gsize <= 0:
                     return self.fail("缺少 file_id / size")
-                jid = job_new("gen139", "生成 cas(移动直连): " + gname)
+                jid = job_new("gen139", "生成 cas(移动直连): " + gname,
+                              str(body.get("path") or ""))
                 threading.Thread(target=run_gen_job139,
                                  args=(jid, fid, gname, gsize,
                                        str(body.get("parent") or "/"),
                                        bool(body.get("upload_back", True))),
                                  daemon=True).start()
                 return self.ok({"job_id": jid})
+            if path == "/api/jobs/clear":
+                removed = 0
+                with JOBS_LOCK:
+                    if body.get("all"):
+                        removed = len(JOBS)
+                        JOBS.clear()
+                    else:
+                        for jid in body.get("ids") or []:
+                            if JOBS.pop(jid, None) is not None:
+                                removed += 1
+                _save_jobs(force=True)
+                return self.ok({"removed": removed})
             if path == "/api/gen":
                 return self.api_gen(body)
             if path == "/api/restore139":
@@ -956,7 +1013,7 @@ class Handler(BaseHTTPRequestHandler):
         size = int(body.get("size") or 0)
         if not path or size <= 0:
             return self.fail("缺少 path / size")
-        jid = job_new("gen", "生成 cas: " + path)
+        jid = job_new("gen", "生成 cas: " + path, path)
         t = threading.Thread(target=run_gen_job,
                              args=(jid, path, size, bool(body.get("upload_back"))),
                              daemon=True)
@@ -1809,7 +1866,8 @@ async function genCas139(i){
   const e=m139Items[i];
   const cur=m139Stack[m139Stack.length-1];
   const d = await api('/api/m139/gen',{file_id:e.id,name:e.name,size:e.size,
-    parent:cur? cur.id : '/', upload_back:$('upback139').checked});
+    parent:cur? cur.id : '/', upload_back:$('upback139').checked,
+    path:m139Stack.map(c=>c.name).join('/')+'/'+e.name});
   if(d.ok){ alert('已开始生成,看下方任务进度'); loadJobs(); } else alert(d.msg);
 }
 function updateHome139Label(){
@@ -1883,12 +1941,27 @@ async function pushGenToRestore(jid, btn){
   showTab('restore');
   window.scrollTo({top:0, behavior:'smooth'});
 }
+function jobsAll(v){ document.querySelectorAll('.jobchk').forEach(c=>{ c.checked=v; }); }
+async function clearJobs(all){
+  let ids=[];
+  if(!all){
+    document.querySelectorAll('.jobchk').forEach(c=>{ if(c.checked) ids.push(c.dataset.id); });
+    if(!ids.length){ alert('先勾选要清空的任务'); return; }
+  }
+  if(!confirm(all? '清空全部任务记录?(只清列表,不删除已生成的 cas 文件)' : '清空所选 '+ids.length+' 条任务记录?(只清列表,不删除已生成的 cas 文件)')) return;
+  const d = await api('/api/jobs/clear', all? {all:true} : {ids:ids});
+  if(d.ok) loadJobs(); else alert(d.msg);
+}
 async function loadJobs(){
   const d = await api('/api/jobs');
-  if(!d.ok||!d.data.length) return;
+  if(!d.ok) return;
+  if(!d.data.length){ $('jobs').innerHTML='暂无'; return; }
   d.data.forEach(j=>{ if(j.status==='done'&&j.result&&j.result.cas_b64) genResults[j.id]={name:j.result.name, b64:j.result.cas_b64}; });
-  $('jobs').innerHTML = d.data.map(j=>
-    '<div style="margin:8px 0"><div>'+esc(j.title)+'</div>'+
+  $('jobs').innerHTML =
+    '<div class=row><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
+    + d.data.map(j=>
+    '<div style="margin:8px 0"><div><label><input type="checkbox" class="jobchk" data-id="'+j.id+'" style="width:auto"> '+esc(j.title)+'</label></div>'
+    +(j.path? '<div class=kv>📁 '+esc(j.path)+'</div>':'')+
     '<div class=mut>'+esc(j.status)+(j.progress!=null? ' · '+j.progress+'%':'')+' · '+esc(j.message||'')+'</div>'+
     (j.progress!=null&&j.status==='running'? '<div class=bar><i style="width:'+j.progress+'%"></i></div>':'')+
     (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已上传回 '+esc(j.result.uploaded_to):'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载这份 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
