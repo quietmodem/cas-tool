@@ -856,6 +856,21 @@ def main():
     check("前端含状态刷新与跳过逻辑", all(x in html for x in
           ["refreshScanState", "原文件已存在,已跳过", "同名文件大小不一致,已跳过",
            "scanStateInfo", "全选可还原"]))
+    # ii) v2.7.2:状态行不显示 OpenList 地址;.cas 文件不提供生成按钮且接口拒绝
+    st, d, _ = req("GET", base + "/api/status")
+    check("状态行不带 OpenList 地址", d["ok"]
+          and d["data"].get("openlist_msg") == "已连通", d["data"].get("openlist_msg"))
+    st, d, _ = req("POST", base + "/api/gen",
+                   {"path": "/天翼云盘/某影片.mkv.cas", "size": 100})
+    check("OpenList 生成拒绝 .cas 源文件", not d["ok"]
+          and "不能生成" in d.get("msg", ""), d)
+    st, d, _ = req("POST", base + "/api/m139/gen",
+                   {"file_id": "CAS1", "name": "样本.cas",
+                    "size": len(MOCK_CAS_BYTES), "parent": "D1"})
+    check("139 生成拒绝 .cas 源文件", not d["ok"]
+          and "不能生成" in d.get("msg", ""), d)
+    check("生成页 .cas 条目无生成按钮", "endsWith('.cas')" in html
+          and "生成 CAS" in html)
     check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
           and "/api/jobs/delete-source" in html)
     check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html

@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.7.1"
+VERSION = "2.7.2"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1046,6 +1046,8 @@ class Handler(BaseHTTPRequestHandler):
                 gsize = int(body.get("size") or 0)
                 if not fid or gsize <= 0:
                     return self.fail("缺少 file_id / size")
+                if gname.lower().endswith(".cas"):
+                    return self.fail("CAS 文件本身不能生成 CAS")
                 parent = str(body.get("parent") or "/")
                 jid = job_new("gen139", "生成 cas(移动直连): " + gname,
                               str(body.get("path") or ""),
@@ -1130,7 +1132,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 ol_list("/")
                 status["openlist_ok"] = True
-                status["openlist_msg"] = "已连通 " + base
+                status["openlist_msg"] = "已连通"
             except Exception as e:  # noqa: BLE001
                 status["openlist_msg"] = str(e)[:200]
         status["m139_ok"] = False
@@ -1155,6 +1157,8 @@ class Handler(BaseHTTPRequestHandler):
         size = int(body.get("size") or 0)
         if not path or size <= 0:
             return self.fail("缺少 path / size")
+        if path.lower().endswith(".cas"):
+            return self.fail("CAS 文件本身不能生成 CAS")
         parent, name = _split_ol_path(path)
         jid = job_new("gen", "生成 cas: " + path, path,
                       {"type": "ol", "path": path, "dir": parent, "name": name})
@@ -2116,7 +2120,7 @@ async function loadM139(){
   m139Items=d.data.items;
   $('m139entries').innerHTML = m139Items.map((e,i)=> e.is_dir
     ? '<div class=row><span class=grow>📁 '+esc(e.name)+'</span><button class="small grey" onclick="m139Down('+i+')">打开</button></div>'
-    : '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span><button class="small green" onclick="genCas139('+i+')">生成 cas</button></div>'
+    : '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span>'+(e.name.toLowerCase().endsWith('.cas')? '<span class=mut>CAS 文件</span>' : '<button class="small green" onclick="genCas139('+i+')">生成 CAS</button>')+'</div>'
   ).join('') || '<span class=mut>(空文件夹)</span>';
 }
 function m139EnterRoot(i){ const r=pickerRoots139()[i]; m139Stack=[{id:r.id,name:r.name}]; loadM139(); }
@@ -2179,7 +2183,7 @@ async function loadList(){
   $('entries').innerHTML = d.data.entries.map(e=>{
     const p = (curPath==='/'?'':curPath)+'/'+e.name;
     if(e.is_dir) return '<div class=row><span class=grow>📁 '+esc(e.name)+'</span><button class="small" onclick="enterDir(\''+esc(p)+'\')">打开</button></div>';
-    return '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span><button class="small green" onclick="genCas(\''+esc(p)+'\','+e.size+')">生成 cas</button></div>';
+    return '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span>'+(e.name.toLowerCase().endsWith('.cas')? '<span class=mut>CAS 文件</span>' : '<button class="small green" onclick="genCas(\''+esc(p)+'\','+e.size+')">生成 CAS</button>')+'</div>';
   }).join('') || '<div class=mut>空目录</div>';
 }
 function genEnterRoot(i){ genRoot=tianyiRoots()[i]; curPath=genRoot; loadList(); }
