@@ -613,6 +613,11 @@ def main():
           and it0["path"].startswith("移动云盘"), it0)
     st, d, _ = req("POST", base + "/api/m139/scan", {"parent": "D1", "recursive": False})
     check("139 扫描指定目录", d["ok"] and len(d["data"]) == 1, d)
+
+    # z) v2.4.1:移动页只列配置目录(无根目录项);选目录按已填路径落点
+    check("移动根列表无云盘根目录项",
+          "{id:'/', name:'移动云盘根目录'}" not in html)
+    check("选目录按已选移动目录直达", "p139Stack=[{id:pid, name:nm}]" in html)
     hdrs, payload = [c for c in captured["create139"]
                      if str(c[1].get("name") or "").endswith(".mkv")][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==

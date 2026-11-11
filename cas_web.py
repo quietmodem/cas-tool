@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1381,9 +1381,9 @@ function goHome(which){
 }
 let pickerCloud='189', p139Stack=[], p139Items=[];
 function pickerRoots139(){
-  const roots=[{id:'/', name:'移动云盘根目录'}];
+  const roots=[];
   for(const d of (SETTINGS.mobile_dirs||[])) roots.push({id:d.id, name:d.name||d.id});
-  if(!(SETTINGS.mobile_dirs||[]).length && SETTINGS.mobile_home_id)
+  if(!roots.length && SETTINGS.mobile_home_id)
     roots.push({id:SETTINGS.mobile_home_id, name:SETTINGS.mobile_home_name||'主目录'});
   return roots;
 }
@@ -1401,15 +1401,35 @@ function togglePicker(targetId){
       const roots=[];
       if(SETTINGS.tianyi_home) roots.push({label:'☁️ 天翼云盘', path:SETTINGS.tianyi_home});
       for(const x of (SETTINGS.tianyi_paths||[])){ if(x && x!==SETTINGS.tianyi_home) roots.push({label:'☁️ 天翼目录', path:x}); }
-      if(roots.length){
-        pickerScope={roots:roots, base:''};
-        const cur=($(pickerTarget).value||'').trim();
-        const hit=roots.find(r=>cur===r.path || cur.startsWith(r.path+'/'));
-        if(hit){ pickerScope.base=hit.path; pickerPath=cur; }
-        else if(roots.length===1){ pickerScope.base=roots[0].path; pickerPath=roots[0].path; }
-        else pickerPath='';
+      pickerScope = roots.length? {roots:roots, base:''} : null;
+      const isRestore = pickerTarget==='target189';
+      const tval = (isRestore? ($('target189').value||'') : ($('scanpath').value||'')).trim();
+      const pid = isRestore? ($('parent139').value||'').trim() : (scan139? scan139.id : '');
+      if(pid){
+        pickerCloud='139';
+        let nm='';
+        const d0=(SETTINGS.mobile_dirs||[]).find(d=>d.id===pid);
+        if(d0) nm=d0.name||pid;
+        else if(SETTINGS.mobile_home_id===pid) nm=SETTINGS.mobile_home_name||pid;
+        else if(isRestore) nm=($('pick139label').textContent||'').replace('移动目标:','')||'已选目录';
+        else nm=(scan139&&scan139.name)||'已选目录';
+        p139Stack=[{id:pid, name:nm}];
+      } else if(tval && !tval.startsWith('移动云盘:')){
+        pickerCloud='189';
+        if(pickerScope){
+          const hit=pickerScope.roots.find(r=>tval===r.path || tval.startsWith(r.path+'/'));
+          pickerScope.base = hit? hit.path : tval;
+        }
+        pickerPath=tval;
+        p139Stack=[];
+      } else {
+        pickerCloud='189';
+        if(pickerScope){
+          if(pickerScope.roots.length===1){ pickerScope.base=pickerScope.roots[0].path; pickerPath=pickerScope.roots[0].path; }
+          else pickerPath='';
+        } else pickerPath='/';
+        p139Stack=[];
       }
-      p139Stack=[];
     }
     $('ph189').style.display = pickerScope? 'none':'';
     showPickerCloud(pickerCloud);
