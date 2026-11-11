@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.6.3"
+VERSION = "2.6.4"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1280,7 +1280,7 @@ button:disabled{opacity:.35}
 <div class="mut">填 OpenList 后台「设置 → 其他 → 令牌」里的长期令牌(F12 抓的会过期)。保存时先实测连通,不通不存。</div>
 <label class="mut"><input type="checkbox" id="cfgtokclear" style="width:auto"> 清除页面里存的 Token(改回用 compose 环境变量里的)</label>
 <label class="mut">SessionKey(网页版)<span id="skstate" class="kv"></span></label>
-<input id="cfgsk189" type="password" placeholder="只用于「天翼检测」,与 OpenList 还原无关">
+<input id="cfgsk189" type="password" placeholder="用于还原失败时查询原因,与 OpenList 还原无关">
 <div class="mut">获取:电脑浏览器登录 cloud.189.cn,按 F12 打开控制台,输入 sessionStorage.getItem('sessionKey') 回车,复制结果填入。会过期,失效重新获取。</div>
 <label class="mut"><input type="checkbox" id="cfgskclear" style="width:auto"> 清除已存的 SessionKey</label>
 <label class="mut">挂载目录(天翼云盘在 OpenList 里的目录)</label>
@@ -1385,15 +1385,6 @@ function clearRestore(){
   $('restorebox').style.display='none';
   refreshBtns();
 }
-async function check189Item(i){
-  const el=$('ck'+i); if(el) el.innerHTML='<span class=mut>检测中…</span>';
-  const d = await api('/api/check189',{cas_b64:batchItems[i].b64});
-  if(!el) return;
-  if(!d.ok){ el.innerHTML='<span class=err>⚠ '+esc(d.msg)+'</span>'; return; }
-  if(d.data.state==='ok') el.innerHTML='<span class=good>✅ '+esc(d.data.msg)+'</span>';
-  else if(d.data.state==='missing') el.innerHTML='<span class=err>✗ '+esc(d.data.msg)+'</span>';
-  else el.innerHTML='<span class=err>⚠ '+esc(d.data.msg)+'</span>';
-}
 function batchAll(v){ document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); refreshBtns(); }
 function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); }
 function renderBatch(){
@@ -1402,7 +1393,7 @@ function renderBatch(){
     it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
       (it.src? '<br><span class=kv>来源: '+esc(it.src)+'</span>':'')+
       '<br><span class=kv>md5: '+esc(it.info.md5||'(空)')+' · sliceMd5: '+esc(it.info.sliceMd5||'(空)')+' · sha256: '+esc(it.info.sha256||'(空)')+'</span>'
-      +(it.info.md5? '<br><button class="small grey" onclick="check189Item('+i+')">🔍 天翼检测</button> <span id="ck'+i+'"></span>' : '')+'</div>'
+      +'</div>'
            : '<div>📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
   ).join('');
 }
@@ -1774,6 +1765,19 @@ function itemCloud(it){
   if(k.indexOf('mobile')===0) return '139';
   return '';
 }
+async function failReason189(it){
+  // 天翼还原失败后,用网页版接口向 189 查具体原因;查不到返回空串
+  const c=itemCloud(it);
+  if(c!=='189' && c!=='both') return '';
+  try{
+    const d=await api('/api/check189',{cas_b64:it.b64});
+    if(!d.ok) return '';
+    if(d.data.state==='missing') return '文件不存在于天翼云端,无法秒传';
+    if(d.data.state==='error') return '秒传被拒绝:'+d.data.msg;
+    if(d.data.state==='ok') return '云端存在该文件,但本次秒传未成功';
+  }catch(e){}
+  return '';
+}
 async function restoreCore(to, items, setStatus){
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   let target = $('target189').value.trim();
@@ -1812,7 +1816,7 @@ async function restoreCore(to, items, setStatus){
     const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||directHome139||'',sidecar:!!$('sidecar').checked}
                               : {cas_b64:it.b64,cas_name:it.name,target:target};
     const d = await api(url,body);
-    if(!d.ok){ setStatus(i,'✗ '+d.msg,'err'); badN++; continue; }
+    if(!d.ok){ let m2=d.msg; const why=await failReason189(it); if(why) m2=why; setStatus(i,'✗ '+m2,'err'); badN++; continue; }
     if(to==='mobile'){
       setStatus(i,'✓ '+(d.msg||'已还原'),'good'); okN++; continue;
     }
@@ -1826,7 +1830,7 @@ async function restoreCore(to, items, setStatus){
       }
       setStatus(i,note,'good'); okN++;
     }
-    else { setStatus(i,'✗ 文件不存在于云端,无法秒传','err'); badN++; }
+    else { const why=await failReason189(it); setStatus(i,'✗ '+(why||'文件不存在于云端,无法秒传'),'err'); badN++; }
   }
   return {okN:okN, badN:badN, target:target};
 }
