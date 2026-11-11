@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 LIB_DIR = os.path.join(DATA_DIR, "caslib")
@@ -261,8 +261,14 @@ def restore_189(cas_bytes, cas_name, target):
     obj = ct.decode_cas_bytes(cas_bytes)
     if not str(obj.get("md5", "")).strip():
         return False, "这份 .cas 没有 md5(是移动版),不能还原到天翼"
+    return restore_openlist(cas_bytes, cas_name, target)
+
+
+def restore_openlist(cas_bytes, cas_name, target):
+    """经 OpenList 种子秒传保存还原到任意挂载目录(天翼/移动都可):
+    本工具不预判哈希够不够,把 cas 原样交给 OpenList,以它的预检结果为准。"""
     if not target:
-        return False, "请填写天翼在 OpenList 里的目标目录"
+        return False, "请填写 OpenList 里的目标目录"
     payload = {
         "seed_data": base64.b64encode(cas_bytes).decode("ascii"),
         "file_name": cas_name or "file.cas",
@@ -413,6 +419,11 @@ class Handler(BaseHTTPRequestHandler):
                 ok, msg = restore_189(cas_bytes, body.get("cas_name") or "file.cas",
                                       body.get("target") or "")
                 return self.ok(msg=msg) if ok else self.fail(msg)
+            if path == "/api/restoreol":
+                cas_bytes = base64.b64decode(body.get("cas_b64", ""))
+                ok, msg = restore_openlist(cas_bytes, body.get("cas_name") or "file.cas",
+                                            body.get("target") or "")
+                return self.ok(msg=msg) if ok else self.fail(msg)
             if path == "/api/lib/add":
                 return self.api_lib_add(body)
             if path == "/api/lib/delete":
@@ -510,8 +521,10 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = restore_139(cas_bytes, body.get("parent") or "/")
         elif to == "tianyi":
             ok, msg = restore_189(cas_bytes, os.path.basename(fp), body.get("target") or "")
+        elif to == "openlist":
+            ok, msg = restore_openlist(cas_bytes, os.path.basename(fp), body.get("target") or "")
         else:
-            return self.fail("to 只能是 mobile / tianyi")
+            return self.fail("to 只能是 mobile / tianyi / openlist")
         return self.ok(msg=msg) if ok else self.fail(msg)
 
 
@@ -574,10 +587,11 @@ textarea{min-height:64px}
 <button class="grey" onclick="saveToLib()">存入 cas 库</button>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
-<input id="target189" placeholder="天翼目标目录(OpenList 路径,如 /天翼云盘/电影)">
-<input id="parent139" value="/" placeholder="移动父目录 fileId(根目录填 /)">
-<button class="green" onclick="doRestore('mobile')">还原到移动云盘</button>
-<button class="green" onclick="doRestore('tianyi')">还原到天翼云盘</button>
+<input id="target189" placeholder="OpenList 目标目录(如 /天翼云盘/电影 或 /移动云盘/电影)">
+<input id="parent139" value="/" placeholder="移动直调时父目录 fileId(根目录填 /)">
+<button class="green" onclick="doRestore('mobile')">还原到移动(直调139接口)</button>
+<button class="green" onclick="doRestore('tianyi')">还原到天翼(经OpenList)</button>
+<button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录(移动挂载可试)</button>
 </div><div id="restoremsg" class="msg"></div></div>
 
 <div class="card"><h2>② 浏览网盘 · 生成 .cas</h2>
@@ -639,7 +653,7 @@ async function saveToLib(){
 async function doRestore(to){
   if(!curCasB64){ alert('先解析一份 cas'); return; }
   $('restoremsg').textContent='提交中…';
-  const url = to==='mobile'? '/api/restore139':'/api/restore189';
+  const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   const body = to==='mobile'? {cas_b64:curCasB64,parent:$('parent139').value||'/'}
                             : {cas_b64:curCasB64,cas_name:curCasName,target:$('target189').value};
   const d = await api(url,body);
@@ -670,6 +684,7 @@ async function loadLib(){
     '<button class="small" onclick="dlLib(\''+esc(it.file)+'\')">下载</button>'+
     '<button class="small green" onclick="libRestore(\''+esc(it.file)+'\',\'mobile\')">移动还原</button>'+
     '<button class="small green" onclick="libRestore(\''+esc(it.file)+'\',\'tianyi\')">天翼还原</button>'+
+    '<button class="small green" onclick="libRestore(\''+esc(it.file)+'\',\'openlist\')">OL还原</button>'+
     '<button class="small red" onclick="delLib(\''+esc(it.file)+'\')">删</button></div>'
   ).join('') || '<div class=mut>库里还没有 cas</div>';
 }
@@ -677,7 +692,7 @@ function dlLib(f){ location.href='/api/lib/download?name='+encodeURIComponent(f)
 async function delLib(f){ if(!confirm('删除 '+f+' ?'))return; const d=await api('/api/lib/delete',{file:f}); loadLib(); }
 async function libRestore(f,to){
   let body={file:f,to:to};
-  if(to==='tianyi'){ const t=prompt('天翼目标目录(OpenList 路径)','/天翼云盘/'); if(!t)return; body.target=t; }
+  if(to==='tianyi'||to==='openlist'){ const t=prompt('OpenList 目标目录(天翼或移动挂载路径)','/天翼云盘/'); if(!t)return; body.target=t; }
   else { const p=prompt('移动父目录 fileId(根目录 /)','/'); if(p===null)return; body.parent=p; }
   const d = await api('/api/lib/restore',body);
   alert(d.ok? d.msg : '失败: '+d.msg);

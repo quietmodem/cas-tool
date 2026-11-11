@@ -9,29 +9,29 @@
 
 纯 Python 3 标准库,无第三方依赖。
 
-## Docker 部署(Web 后台)
+## Docker 部署(Web 后台)—— 一个 YAML 文件搞定
 
-从 GitHub 拉取(群晖 SSH):
+镜像由 GitHub Actions 每次推送自动构建到 GHCR,部署端**不用源码、不用构建**:
 
-```bash
-cd /volume1/docker
-git clone https://github.com/quietmodem/cas-tool.git
-cd cas-tool
-# 后续更新: git pull 后 docker compose up -d --build 即可
-```
+1. 只下载这一个文件:
+   `https://raw.githubusercontent.com/quietmodem/cas-tool/main/docker-compose.yml`
+   (或把仓库里的 `docker-compose.yml` 内容整段复制出来),放到群晖任意目录
+   (如 `/volume1/docker/cas-tool/`)
+2. 改文件里 `OPENLIST_URL` / `OPENLIST_TOKEN`(复制你 OpenList 的地址和后台令牌),
+   建议顺手填上 `WEB_PASSWORD` 页面口令
+3. 群晖 Container Manager 里以「项目」方式选这个文件启动,或 SSH 下 `docker compose up -d`
+4. 手机 Safari 打开 `http://群晖IP:8099`,可添加到主屏幕当 App 用
+5. 更新版本:`docker compose pull && docker compose up -d` 就完事
 
-或手动:把 `cas_tool.py`、`cas_web.py`、`Dockerfile`、`docker-compose.yml`
-放进群晖同一个目录(如 `/volume1/docker/cas-tool/`)。然后:
-
-1. 改 `docker-compose.yml` 里的 `OPENLIST_URL` / `OPENLIST_TOKEN`
-   (复制你 OpenList 的地址和后台令牌),建议顺手填上 `WEB_PASSWORD` 页面口令;
-   移动还原要用再填 `CAS139_PHONE` / `CAS139_AUTH`
-2. 群晖 Container Manager 里以「项目」方式导入,或 SSH 下 `docker compose up -d --build`
-3. 手机 Safari 打开 `http://群晖IP:8099`,可添加到主屏幕当 App 用
+开发者改代码走 git: `git clone https://github.com/quietmodem/cas-tool.git`,
+本地构建用仓库里的 Dockerfile。
 
 页面功能(四块):
 
-- **还原 cas**:选 .cas 文件(或粘贴 Base64 文本)→ 解析看类型 → 一键还原到移动 / 天翼
+- **还原 cas**:选 .cas 文件(或粘贴 Base64 文本)→ 解析看类型 → 还原到移动 / 天翼;
+  另有「经 OpenList 还原」:把 cas 交给 OpenList 的种子秒传保存,目标目录可以是
+  任意挂载 —— 移动云盘如果也挂在 OpenList 上,可以用它试还原到移动挂载,
+  成不成以 OpenList 的预检结果为准(走通了就不用再配 139 直调凭据)
 - **浏览网盘生成 cas**:按 OpenList 挂载逐层浏览,对任意文件点「生成 cas」,
   后台流式读一遍算哈希(带进度),cas 存进服务端 cas 库;勾选的话还会把 .cas
   上传回网盘里原文件旁边
@@ -131,11 +131,10 @@ MD5、给不了分片 MD5,所以**任何**工具想给网盘里的文件生成 c
 - 两个还原分支的 `--dry-run` 输出的请求体与接口要求逐项核对无误
 
 Web 后台已用 mock OpenList + mock 139 接口做完整端到端测试
-(`python3 test_web.py`,26 项全过):浏览、生成(哈希与独立计算一致)、
-上传回网盘、两种还原的请求载荷、cas 库增删、口令登录,都验证无误。
-本机环境没有 Docker,镜像没有实际 build 过;Dockerfile 只是
-`python:3.12-alpine` + 拷贝两个 .py + 启动已实测可运行的 `cas_web.py`,
-compose 文件已做 YAML 语法校验,群晖上 build 失败的话把报错发我。
+(`python3 test_web.py`,28 项全过):浏览、生成(哈希与独立计算一致)、
+上传回网盘、三种还原的请求载荷、cas 库增删、口令登录,都验证无误。
+Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:latest`
+(amd64 + arm64),部署端只拉镜像。
 
 尚未用真实账号实测(需要你的凭据,我这边没有):
 
@@ -148,4 +147,4 @@ compose 文件已做 YAML 语法校验,群晖上 build 失败的话把报错发�
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v1.0.0(2026-11-11)
+版本: CLI v1.0.0 / Web v1.1.0(2026-11-11)

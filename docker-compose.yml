@@ -1,13 +1,12 @@
-# CAS 双云工具 —— 群晖 Container Manager「项目」或 docker compose 直接可用
+# CAS 双云工具 —— 一个文件搞定:直接拉 GHCR 预构建镜像,不用源码、不用本地构建
 # 用法:
-#   1. 把 cas_tool.py / cas_web.py / Dockerfile / 本文件放进群晖同一个目录
-#      (如 /volume1/docker/cas-tool/)
+#   1. 把这一个文件放到群晖任意目录(如 /volume1/docker/cas-tool/)
 #   2. 改下面 environment 里的连接信息(复制你 OpenList 的地址和令牌即可)
-#   3. 启动后手机浏览器打开 http://群晖IP:8099
+#   3. 群晖 Container Manager「项目」选这个文件启动,或 SSH: docker compose up -d
+#   更新版本: docker compose pull && docker compose up -d
 services:
   cas-tool:
-    build: .
-    image: cas-tool:latest
+    image: ghcr.io/quietmodem/cas-tool:latest
     container_name: cas-tool
     restart: unless-stopped
     ports:
@@ -17,6 +16,7 @@ services:
       OPENLIST_URL: "http://192.168.111.10:5244"   # ← 改成你的 OpenList 地址
       OPENLIST_TOKEN: "改成你的OpenList令牌"        # 后台:设置 → 其他 → 令牌
       # —— 移动云盘直调还原(139):浏览器登录 yun.139.com 后 F12 网络里抄 Authorization ——
+      #     若「经 OpenList 还原」到移动挂载能走通,这两项可以不填
       CAS139_PHONE: ""                             # 手机号(只还原移动版时需要)
       CAS139_AUTH: ""                              # 形如 Basic xxxxx(同上)
       # —— 页面访问口令:强烈建议设一个,留空则局域网内任何人打开就能用 ——

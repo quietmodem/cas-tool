@@ -244,6 +244,16 @@ def main():
     st, d, _ = req("GET", base + "/api/lib")
     check("删除后库为空", len(d["data"]) == 0)
 
+    # j) 经 OpenList 通用还原(移动版 cas -> 移动挂载目录,交给 OpenList 预检裁决)
+    before = len([1 for k, _ in captured["seed"] if k == "rapid_upload"])
+    st, d, _ = req("POST", base + "/api/restoreol",
+                   {"cas_b64": sample_b64, "cas_name": "sample.cas", "target": "/移动云盘/电影"})
+    check("restoreol 提交成功", d["ok"], d)
+    rapids = [b for k, b in captured["seed"] if k == "rapid_upload"]
+    check("restoreol 载荷指向移动挂载",
+          len(rapids) == before + 1 and rapids[-1]["path"] == "/移动云盘/电影"
+          and base64.b64decode(rapids[-1]["seed_data"]) == sample_bytes)
+
     # i) 口令保护
     cas_web.WEB_PASSWORD = "pw123"
     st, d, _ = req("GET", base + "/api/status")
