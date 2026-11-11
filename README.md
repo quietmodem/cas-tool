@@ -148,7 +148,12 @@ Docker 镜像由 GitHub Actions 构建并推到 `ghcr.io/quietmodem/cas-tool:lat
   `target driver cannot reuse the available hashes`,那种文件继续用你验证过的
   油猴脚本还原即可;本工具 gen 出来的 cas 带完整聚合 sliceMd5,属于新格式。
 
-版本: CLI v1.0.0 / Web v2.1.0(2026-11-11)。Web v2.1.0:移动「密码登录
+版本: CLI v1.0.0 / Web v2.1.1(2026-11-11)。Web v2.1.1:新增「移动主
+目录(直连)」——还原页的 139 直连选目录弹窗里多一个「设为主目录」,
+按文件夹 ID 保存;设了之后移动还原目标留空直接按 ID 落主目录,不再
+经 OpenList 路径解析;生成页直连浏览加「⭐ 主目录」一键跳。原 OpenList
+路径版移动主目录保留,只剩浏览跳转与目录归属校验两个用途。
+Web v2.1.0:移动「密码登录
 回退」,移植 OpenList 139 驱动的鉴权机制——设置页新增与 OpenList 同名
 同格式的三项(Username / Password / MailCookies,外加 SmsCode),可把
 OpenList 里 139 存储的配置原样复制过来。授权到期 15 天内自动调

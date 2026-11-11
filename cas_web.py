@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -475,7 +475,8 @@ def settings_path():
 SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
                  "cas139_phone", "cas139_auth", "web_pw_hash",
                  "cas139_user", "cas139_pass", "cas139_mail_cookies",
-                 "cas139_sms_code", "cas139_udid")
+                 "cas139_sms_code", "cas139_udid",
+                 "mobile_home_id", "mobile_home_name")
 PATH_KEYS = ("tianyi_paths", "mobile_paths")
 
 
@@ -580,6 +581,10 @@ def update_settings(body):
         cur["cas139_auth"] = auth_in
     if "cas139_user" in body:
         cur["cas139_user"] = str(body.get("cas139_user") or "").strip()
+    if "mobile_home_id" in body:
+        cur["mobile_home_id"] = str(body.get("mobile_home_id") or "").strip()
+    if "mobile_home_name" in body:
+        cur["mobile_home_name"] = str(body.get("mobile_home_name") or "").strip()
     for _k in ("cas139_pass", "cas139_mail_cookies", "cas139_sms_code"):
         _v = str(body.get(_k) or "").strip()
         if _v:
@@ -650,6 +655,8 @@ def public_settings(s=None):
             "cas139_pass_set": bool(s["cas139_pass"]),
             "cas139_mail_cookies_set": bool(s["cas139_mail_cookies"]),
             "cas139_sms_code_set": bool(s["cas139_sms_code"]),
+            "mobile_home_id": s["mobile_home_id"],
+            "mobile_home_name": s["mobile_home_name"],
             "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD)}
 
 
@@ -1047,6 +1054,7 @@ button:disabled{opacity:.35}
 <div id="m139pick" class="overlay" style="display:none" onclick="if(event.target===this)close139Pick()"><div class="sheet">
 <div class="row"><b class="grow">📁 移动云盘选目录(直连)</b>
 <button class="small green" onclick="confirm139Pick()">✔ 选当前目录</button>
+<button class="small grey" onclick="set139Home()">设为主目录</button>
 <button class="small grey" onclick="close139Pick()">关闭</button></div>
 <div id="m139pickcrumbs" class="crumbs"></div>
 <div id="m139picklist"></div>
@@ -1066,6 +1074,7 @@ button:disabled{opacity:.35}
 <button class="small grey" onclick="fillHome('139')">填入移动主目录</button></div>
 <input id="parent139" value="" placeholder="移动直调父目录 fileId(高级,一般留空;留空按上方目标目录还原)">
 <div class="row"><button class="small grey" onclick="open139Pick()">📁 从移动云盘选目录(直连)</button><span id="pick139label" class="mut"></span></div>
+<div class="mut" id="home139label"></div>
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,把 .cas 也存到目标目录(视频旁边)</label>
 <button class="green" id="btnTy" onclick="doRestore('tianyi')">还原到天翼云盘</button>
 <button class="green" id="btnMb" onclick="doRestore('mobile')">还原到移动云盘</button>
@@ -1104,6 +1113,7 @@ button:disabled{opacity:.35}
 <div id="entries"></div></div>
 <div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 .cas</h2>
 <div class="row"><button class="small grey" onclick="m139Up(0)">🏠 根目录</button>
+<button class="small grey" onclick="m139GoHome()">⭐ 主目录</button>
 <span class="grow" id="m139crumbs">移动云盘</span>
 <button class="small grey" onclick="loadM139()">刷新</button></div>
 <div class="mut">直连 139 接口浏览,不经 OpenList;生成的 .cas 在下方任务里下载(旁存功能直连模式暂不支持)。</div>
@@ -1151,6 +1161,8 @@ button:disabled{opacity:.35}
 <label class="mut">移动云盘主目录</label>
 <div class="row"><input id="home139" class="grow" placeholder="如 /TV/移动云盘">
 <button class="small grey" onclick="togglePicker('home139')">📁 选目录</button></div>
+<div class="row"><span class="mut">移动主目录(直连,不经 OpenList):</span><span id="home139d" class="grow">未设置</span><button class="small grey" onclick="clear139Home()">清除</button></div>
+<div class="mut">设置方法:还原页点「从移动云盘选目录(直连)」,选好文件夹后点弹窗里的「设为主目录」。设了之后,移动还原目标留空直接落这个文件夹(按 ID),OpenList 路径版主目录只剩浏览跳转和目录校验两个用途。</div>
 <label class="mut">天翼云盘路径(可多个,一行一个;还原校验用)</label>
 <textarea id="paths189" placeholder="/TV/天翼云盘在线&#10;/天翼云盘"></textarea>
 <button class="small grey" onclick="togglePicker('append:paths189')">📁 添加一个目录</button>
@@ -1281,6 +1293,7 @@ async function loadSettings(){
   if(!d.ok) return;
   SETTINGS=d.data;
   $('home189').value=SETTINGS.tianyi_home||''; $('home139').value=SETTINGS.mobile_home||'';
+  updateHome139Label();
   $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
   $('paths189').value=(SETTINGS.tianyi_paths||[]).join('\n');
   $('paths139').value=(SETTINGS.mobile_paths||[]).join('\n');
@@ -1405,6 +1418,7 @@ function itemCloud(it){
 async function restoreCore(to, items, setStatus){
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   let target = $('target189').value.trim();
+  const directHome139 = (to==='mobile' && !target && !$('parent139').value.trim() && SETTINGS.mobile_home_id)? SETTINGS.mobile_home_id : '';
   if(!target) target = (to==='tianyi'? SETTINGS.tianyi_home : SETTINGS.mobile_home) || '/';
   {
     const warns=[];
@@ -1412,7 +1426,7 @@ async function restoreCore(to, items, setStatus){
       if(!it.info || it._skip) continue;
       const c=itemCloud(it);
       if(to==='mobile'){
-        if(inCloud(target,'139')===false) warns.push('《'+it.info.name+'》要还原到移动,但目标目录 '+target+' 不在设置的移动云盘路径下');
+        if(!directHome139 && inCloud(target,'139')===false) warns.push('《'+it.info.name+'》要还原到移动,但目标目录 '+target+' 不在设置的移动云盘路径下');
       } else if(to==='tianyi'){
         if(inCloud(target,'189')===false) warns.push('《'+it.info.name+'》要还原到天翼,但目标目录 '+target+' 不在设置的天翼云盘路径下');
       } else if(c==='189'){
@@ -1434,7 +1448,7 @@ async function restoreCore(to, items, setStatus){
     if(!it.info){ badN++; continue; }
     if(it._skip){ continue; }
     setStatus(i,'还原中…','mut');
-    const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||'',target:target}
+    const body = to==='mobile'? {cas_b64:it.b64,parent:$('parent139').value||directHome139||'',target:target}
                               : {cas_b64:it.b64,cas_name:it.name,target:target};
     const d = await api(url,body);
     if(!d.ok){ setStatus(i,'✗ '+d.msg,'err'); badN++; continue; }
@@ -1509,6 +1523,29 @@ async function load139Pick(){
 }
 function pick139Down(i){ const e=pick139Items[i]; pick139Stack.push({id:e.id,name:e.name}); load139Pick(); }
 function pick139Up(){ pick139Stack.pop(); load139Pick(); }
+function updateHome139Label(){
+  const t = SETTINGS.mobile_home_id? '移动主目录(直连):'+(SETTINGS.mobile_home_name||SETTINGS.mobile_home_id)+' —— 还原时目标留空就直接落这里,不经 OpenList' : '移动主目录(直连):未设置(在选目录弹窗里点「设为主目录」)';
+  const el=$('home139label'); if(el) el.textContent=t;
+  const el2=$('home139d'); if(el2) el2.textContent = SETTINGS.mobile_home_id? (SETTINGS.mobile_home_name||SETTINGS.mobile_home_id) : '未设置';
+}
+async function set139Home(){
+  const cur=pick139Stack[pick139Stack.length-1];
+  const name=pick139Stack.map(c=>c.name).join('/');
+  const d = await api('/api/settings',{mobile_home_id:cur.id,mobile_home_name:name});
+  if(d.ok){ SETTINGS.mobile_home_id=cur.id; SETTINGS.mobile_home_name=name; updateHome139Label(); $('pick139label').textContent='已设为主目录:'+name; close139Pick(); }
+  else alert(d.msg);
+}
+async function clear139Home(){
+  const d = await api('/api/settings',{mobile_home_id:'',mobile_home_name:''});
+  if(d.ok){ SETTINGS.mobile_home_id=''; SETTINGS.mobile_home_name=''; updateHome139Label(); }
+  else alert(d.msg);
+}
+function m139GoHome(){
+  if(!SETTINGS.mobile_home_id){ alert('还没设移动主目录(直连):到还原页点「从移动云盘选目录(直连)」,选好文件夹后点「设为主目录」'); return; }
+  const nm=(SETTINGS.mobile_home_name||'主目录').split('/').pop();
+  m139Stack=[{id:'/',name:'移动云盘'},{id:SETTINGS.mobile_home_id,name:nm}];
+  loadM139();
+}
 function confirm139Pick(){
   const cur=pick139Stack[pick139Stack.length-1];
   $('parent139').value = cur.id;

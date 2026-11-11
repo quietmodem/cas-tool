@@ -503,6 +503,20 @@ def main():
     M139_LOGIN["refresh_ok"] = True
     st, d, _ = req("POST", base + "/api/m139/relogin", {})
     check("手动刷新授权接口", d["ok"], d)
+
+    # u) 移动主目录(直连):设置往返 + 按主目录 ID 还原
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"mobile_home_id": "HOMEID-42",
+                    "mobile_home_name": "移动云盘/中转"})
+    check("直连主目录已保存",
+          d["ok"] and d["data"]["mobile_home_id"] == "HOMEID-42"
+          and d["data"]["mobile_home_name"] == "移动云盘/中转", d)
+    n_create = len(captured["create139"])
+    st, d, _ = req("POST", base + "/api/restore139",
+                   {"cas_b64": sample_b64, "parent": "HOMEID-42"})
+    check("按直连主目录 ID 还原",
+          d["ok"] and len(captured["create139"]) == n_create + 1
+          and captured["create139"][-1][1]["parentFileId"] == "HOMEID-42", d)
     hdrs, payload = captured["create139"][-1]
     check("139 请求带正确 contentHash", payload["contentHash"] ==
           "a645a49a267973cbf156f5d458bc0f7a08234b00e01e67a83a62831655f24775")
