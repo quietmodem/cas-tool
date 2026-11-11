@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -808,15 +808,15 @@ textarea{min-height:64px}
 <button onclick="inspectCas()">解析</button>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
-<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼主目录,OL按钮用移动主目录)">
+<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼主目录,移动按钮用移动主目录)">
 <button class="small grey" onclick="togglePicker('target189')">📁 选目录</button></div>
 <div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼主目录</button>
 <button class="small grey" onclick="fillHome('139')">填入移动主目录</button></div>
 <input id="parent139" value="" placeholder="移动直调父目录 fileId(高级,一般留空;留空按上方目标目录还原)">
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,把 .cas 也存到目标目录(视频旁边)</label>
-<button class="green" onclick="doRestore('mobile')">还原到移动(直调139接口)</button>
-<button class="green" onclick="doRestore('tianyi')">还原到天翼(经OpenList)</button>
-<button class="green" onclick="doRestore('openlist')">经 OpenList 还原到上面目录</button>
+<button class="green" onclick="doRestore('tianyi')">还原到天翼云盘</button>
+<button class="green" onclick="doRestore('mobile')">还原到移动云盘</button>
+<div class="mut">两个按钮的区别只是去哪个云:天翼经 OpenList 秒传,移动走 139 直调(OpenList 不支持移动秒传)。</div>
 </div><div id="restoremsg" class="msg"></div>
 <div style="border-top:1px solid #eef0f4;margin-top:14px;padding-top:12px">
 <h2>🔍 扫描网盘目录里的 .cas</h2>
@@ -830,9 +830,8 @@ textarea{min-height:64px}
 <div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选</button>
 <button class="small grey" onclick="scanCheckAll(false)">全不选</button>
 <span class="mut">目标目录/旁存 .cas 用上方还原区那一栏(留空按主目录)</span></div>
-<button class="green" onclick="scanRestore('tianyi')">还原选中的到天翼(经OpenList)</button>
-<button class="green" onclick="scanRestore('openlist')">经 OpenList 还原选中的</button>
-<button class="green" onclick="scanRestore('mobile')">还原选中的到移动(直调139接口)</button>
+<button class="green" onclick="scanRestore('tianyi')">还原到天翼云盘</button>
+<button class="green" onclick="scanRestore('mobile')">还原到移动云盘</button>
 <div id="scanrestoremsg" class="msg"></div>
 </div>
 </div></div>
@@ -859,7 +858,7 @@ textarea{min-height:64px}
 <input id="cfgurl" placeholder="如 http://192.168.111.2:5244">
 <label class="mut">OpenList Token <span id="tokstate" class="kv"></span></label>
 <input id="cfgtoken" type="password" placeholder="粘贴 OpenList 后台的令牌">
-<div class="mut">填 OpenList 后台「设置 → 其他 → 令牌」里的长期令牌;浏览器 F12 里抓的登录 token 是临时的,会过期失效。保存时工具会先实测这组地址+Token,不通不会存。</div>
+<div class="mut">填 OpenList 后台「设置 → 其他 → 令牌」里的长期令牌;浏览器 F12 里抓的登录 token 是临时的,会过期失效。保存时工具会先实测这组地址+Token,不通不会存。框里显示星号 = 已保存:不动它、或清空,都算不修改;要更换直接输入新的,要删除勾下面的清除项。</div>
 <label class="mut"><input type="checkbox" id="cfgtokclear" style="width:auto"> 清除页面里存的 Token(改回用 compose 环境变量里的)</label>
 <label class="mut">移动云盘手机号(移动直调还原用,可不填)</label>
 <input id="cfgphone" placeholder="手机号">
@@ -939,13 +938,16 @@ async function inspectCas(){
   renderBatch();
   $('restorebox').style.display='block';
 }
+function batchAll(v){ document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); }
+function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); }
 function renderBatch(){
-  $('inspect').innerHTML = batchItems.map((it,i)=>
-    it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
+  const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto" checked onchange="batchAll(this.checked)"> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</span></div>' : '';
+  $('inspect').innerHTML = head + batchItems.map((it,i)=>
+    it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
       (it.src? '<br><span class=kv>来源: '+esc(it.src)+'</span>':'')+
       '<br><span class=kv>md5: '+esc(it.info.md5||'(空)')+' · sliceMd5: '+esc(it.info.sliceMd5||'(空)')+' · sha256: '+esc(it.info.sha256||'(空)')+'</span></div>'
            : '<div>📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
-  ).join('') + (batchItems.length>1? '<div class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</div>':'');
+  ).join('');
 }
 let scanItems=[];
 async function scanCas(){
@@ -987,6 +989,10 @@ function switchTab(name){
   }
 }
 let SETTINGS={tianyi_home:'',mobile_home:''};
+const MASK='••••••••';
+function secVal(id){ const v=$(id).value; return v===MASK? '' : v.trim(); }
+function secValRaw(id){ const v=$(id).value; return v===MASK? '' : v; }
+['cfgtoken','cfgauth','cfgpw'].forEach(function(id){ const el=$(id); if(el) el.addEventListener('focus', function(){ if(el.value===MASK) el.select(); }); });
 async function loadSettings(){
   const d = await api('/api/settings');
   if(!d.ok) return;
@@ -995,6 +1001,9 @@ async function loadSettings(){
   $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
   $('paths189').value=(SETTINGS.tianyi_paths||[]).join('\n');
   $('paths139').value=(SETTINGS.mobile_paths||[]).join('\n');
+  $('cfgtoken').value = SETTINGS.openlist_token_set? MASK : '';
+  $('cfgauth').value = SETTINGS.cas139_auth_set? MASK : '';
+  $('cfgpw').value = SETTINGS.web_password_set? MASK : '';
   $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置'+(SETTINGS.openlist_token_source? ' · 来自'+SETTINGS.openlist_token_source : '')+')' : '(未设置)';
   $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置)' : '(未设置)';
   $('pwstate').textContent = SETTINGS.web_password_set? '(已设置)' : '(未设置)';
@@ -1003,9 +1012,9 @@ async function saveSettings(){
   const body={tianyi_home:$('home189').value.trim(), mobile_home:$('home139').value.trim(),
     tianyi_paths:$('paths189').value.split('\n').map(s=>s.trim()).filter(Boolean),
     mobile_paths:$('paths139').value.split('\n').map(s=>s.trim()).filter(Boolean),
-    openlist_url:$('cfgurl').value.trim(), openlist_token:$('cfgtoken').value.trim(),
-    cas139_phone:$('cfgphone').value.trim(), cas139_auth:$('cfgauth').value.trim(),
-    web_password:$('cfgpw').value, clear_web_password:$('cfgpwclear').checked,
+    openlist_url:$('cfgurl').value.trim(), openlist_token:secVal('cfgtoken'),
+    cas139_phone:$('cfgphone').value.trim(), cas139_auth:secVal('cfgauth'),
+    web_password:secValRaw('cfgpw'), clear_web_password:$('cfgpwclear').checked,
     clear_openlist_token:$('cfgtokclear').checked, clear_cas139_auth:$('cfgauthclear').checked};
   const d = await api('/api/settings', body);
   $('setmsg').innerHTML = d.ok? '<span class=good>已保存</span>' : '<span class=err>'+esc(d.msg)+'</span>';
@@ -1088,13 +1097,15 @@ function itemCloud(it){
 async function restoreCore(to, items, setStatus){
   const url = to==='mobile'? '/api/restore139' : (to==='openlist'? '/api/restoreol' : '/api/restore189');
   let target = $('target189').value.trim();
-  if(!target) target = (to==='tianyi'? SETTINGS.tianyi_home : to==='openlist'? SETTINGS.mobile_home : '') || '/';
-  if(to!=='mobile'){
+  if(!target) target = (to==='tianyi'? SETTINGS.tianyi_home : SETTINGS.mobile_home) || '/';
+  {
     const warns=[];
     for(const it of items){
       if(!it.info || it._skip) continue;
       const c=itemCloud(it);
-      if(to==='tianyi'){
+      if(to==='mobile'){
+        if(inCloud(target,'139')===false) warns.push('《'+it.info.name+'》要还原到移动,但目标目录 '+target+' 不在设置的移动云盘路径下');
+      } else if(to==='tianyi'){
         if(inCloud(target,'189')===false) warns.push('《'+it.info.name+'》要还原到天翼,但目标目录 '+target+' 不在设置的天翼云盘路径下');
       } else if(c==='189'){
         if(inCloud(target,'189')===false) warns.push('《'+it.info.name+'》是天翼 cas,目标目录 '+target+' 不在设置的天翼云盘路径下');

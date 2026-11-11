@@ -195,6 +195,10 @@ def main():
           [b"renderScan", b"scanRestore", b'id="scanlist"', b'id="cfgurl"', b'id="cfgtoken"', b'id="cfgpw"']))
     check("首页含云盘路径校验", all(x in html for x in
           [b'id="paths189"', b'id="paths139"', b"cloudPathSet", b"inCloud", b"itemCloud"]))
+    check("v1.10 还原只剩两个按钮,无 OL 按钮", all(x in html for x in
+          ["还原到天翼云盘".encode(), "还原到移动云盘".encode(), b"batchall", b"batchAll"])
+          and "经 OpenList 还原".encode() not in html and "OL按钮".encode() not in html)
+    check("v1.10 批量列表有全选复选框", b'id="batchall"' in html and b"class=\"itchk\"" in html)
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
