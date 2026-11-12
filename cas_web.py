@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.8.0"
+VERSION = "2.9.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1408,20 +1408,19 @@ button:disabled{opacity:.35}
 <div class="row"><button class="small grey" id="srcOl" onclick="setBrowseSrc('ol')">☁️ 天翼云盘</button>
 <button class="small grey" id="src139" onclick="setBrowseSrc('139')">📱 移动云盘(直连)</button></div>
 <div class="card" id="olbrowse"><h2>浏览网盘 · 生成 CAS</h2>
-<div class="row"><button class="small grey" onclick="goUp()">⬆ 上级</button>
-<span class="grow" id="curpath">/</span>
+<div class="row"><span class="grow crumbs" id="curpath" style="padding-top:0">/</span>
 <button class="small grey" onclick="loadList()">刷新</button></div>
-<div class="row"><button class="small grey" onclick="goHome('189')">跳到天翼挂载目录</button></div>
+<div class="row"><input id="genfilter" class="grow" placeholder="筛选本层文件或文件夹…" oninput="renderGenEntries()"></div>
 <label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后,CAS文件保存至同目录</label>
-<div id="entries"></div></div>
+<div id="entries"></div>
+<div class="row"><button class="small grey" onclick="goUp()">⬆ 上级</button><button class="small grey" onclick="genMkdir('189')">＋ 新建目录</button></div></div>
 <div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 CAS</h2>
-<div class="row"><label class="mut"><input type="checkbox" id="upback139" style="width:auto" checked> 生成后,CAS文件保存至同目录</label></div>
-<div class="row"><button class="small grey" onclick="m139UpBtn()">⬆ 上级</button>
-<span class="grow" id="m139crumbs">移动云盘</span>
+<div class="row"><span class="grow crumbs" id="m139crumbs" style="padding-top:0">移动云盘</span>
 <button class="small grey" onclick="loadM139()">刷新</button></div>
-<div class="row"><button class="small grey" onclick="m139Roots()">🏠 全部目录</button>
-<button class="small grey" onclick="m139GoHome()">跳到移动默认目录</button></div>
-<div id="m139entries"></div></div>
+<div class="row"><input id="genfilter139" class="grow" placeholder="筛选本层文件或文件夹…" oninput="renderM139Entries()"></div>
+<label class="mut"><input type="checkbox" id="upback139" style="width:auto" checked> 生成后,CAS文件保存至同目录</label>
+<div id="m139entries"></div>
+<div class="row"><button class="small grey" onclick="m139UpBtn()">⬆ 上级</button><button class="small grey" onclick="genMkdir('139')">＋ 新建目录</button></div></div>
 
 <div class="card"><h2>任务</h2><div id="jobs" class="mut">暂无</div><div id="jobsmsg" class="msg"></div></div>
 </div>
@@ -1785,10 +1784,6 @@ function fillHome(which){
   const v = SETTINGS.tianyi_home;
   if(v){ $('target189').value=v; $('parent139').value=''; picked139Path=''; } else { alert('未设置挂载目录,请先在「设置」页配置'); }
 }
-function goHome(which){
-  const v = SETTINGS.tianyi_home;
-  if(v){ genRoot=v; curPath=v; loadList(); } else { alert('未设置挂载目录,请先在「设置」页配置'); }
-}
 let pickerCloud='189', p139Stack=[], p139Items=[], picked139Path='';
 function tianyiRoots(){
   const roots=[];
@@ -2127,30 +2122,42 @@ function setBrowseSrc(s){
   $('m139browse').style.display = s==='139'? '' : 'none';
   if(s==='139') loadM139();
 }
+function renderM139Crumbs(){
+  const el=$('m139crumbs');
+  if(!m139Stack.length){ el.innerHTML='<span class="crumb">移动云盘目录</span>'; return; }
+  let h=(pickerRoots139().length>1? '<span class="crumb" onclick="m139Roots()">⇄ 全部目录</span> <span class="mut">›</span> ' : '');
+  m139Stack.forEach((c,i)=>{ if(i) h+=' <span class="mut">›</span> '; h+='<span class="crumb" onclick="m139Up('+i+')">'+esc(c.name)+'</span>'; });
+  el.innerHTML=h;
+}
 async function loadM139(){
+  const roots=pickerRoots139();
+  if(!m139Stack.length && roots.length===1) m139Stack=[{id:roots[0].id, name:roots[0].name}];
+  renderM139Crumbs();
   if(!m139Stack.length){
-    $('m139crumbs').textContent='移动云盘目录';
-    const roots=pickerRoots139();
-    $('m139entries').innerHTML = roots.length? roots.map((r,i)=>'<div class=row><span class=grow>📁 '+esc(r.name)+'</span><button class="small grey" onclick="m139EnterRoot('+i+')">打开</button></div>').join('')
+    $('m139entries').innerHTML = roots.length? roots.map((r,i)=>'<div class="row dirrow" onclick="m139EnterRoot('+i+')"><span>📁</span><span class="grow">'+esc(r.name)+'</span></div>').join('')
       : '<span class=mut>未配置目录(设置页「移动云盘目录」)</span>';
     return;
   }
   const cur=m139Stack[m139Stack.length-1];
-  $('m139crumbs').textContent = m139Stack.map(c=>c.name).join(' / ');
   $('m139entries').innerHTML='<span class=mut>加载中...</span>';
   const d = await api('/api/m139/list',{parent:cur.id});
   if(!d.ok){ $('m139entries').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
   m139Items=d.data.items;
-  $('m139entries').innerHTML = m139Items.map((e,i)=> e.is_dir
-    ? '<div class=row><span class=grow>📁 '+esc(e.name)+'</span><button class="small grey" onclick="m139Down('+i+')">打开</button></div>'
-    : '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span>'+(e.name.toLowerCase().endsWith('.cas')? '<span class=mut>CAS 文件</span>' : '<button class="small green" onclick="genCas139('+i+')">生成 CAS</button>')+'</div>'
-  ).join('') || '<span class=mut>(空文件夹)</span>';
+  renderM139Entries();
 }
-function m139EnterRoot(i){ const r=pickerRoots139()[i]; m139Stack=[{id:r.id,name:r.name}]; loadM139(); }
-function m139Roots(){ m139Stack=[]; loadM139(); }
-function m139UpBtn(){ if(m139Stack.length>1){ m139Stack.pop(); loadM139(); } else if(m139Stack.length===1){ m139Roots(); } }
-function m139Down(i){ const e=m139Items[i]; m139Stack.push({id:e.id,name:e.name}); loadM139(); }
-function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); loadM139(); }
+function renderM139Entries(){
+  const q=(($('genfilter139').value)||'').trim().toLowerCase();
+  const vis=m139Items.map((e,i)=>({e:e,i:i})).filter(x=>!q||x.e.name.toLowerCase().includes(q));
+  $('m139entries').innerHTML = vis.length? vis.map(x=> x.e.is_dir
+    ? '<div class="row dirrow" onclick="m139Down('+x.i+')"><span>📁</span><span class="grow">'+esc(x.e.name)+'</span></div>'
+    : '<div class=row><span class=grow>📄 '+esc(x.e.name)+'<br><span class=mut>'+x.e.size+' 字节</span></span>'+(x.e.name.toLowerCase().endsWith('.cas')? '<span class=mut>CAS 文件</span>' : '<button class="small green" onclick="genCas139('+x.i+')">生成 CAS</button>')+'</div>'
+  ).join('') : '<span class=mut>'+(q?'没有匹配的文件或文件夹':'当前目录为空')+'</span>';
+}
+function m139EnterRoot(i){ const r=pickerRoots139()[i]; m139Stack=[{id:r.id,name:r.name}]; $('genfilter139').value=''; loadM139(); }
+function m139Roots(){ m139Stack=[]; $('genfilter139').value=''; loadM139(); }
+function m139UpBtn(){ if(m139Stack.length>1){ m139Stack.pop(); $('genfilter139').value=''; loadM139(); } else if(m139Stack.length===1){ m139Roots(); } }
+function m139Down(i){ const e=m139Items[i]; m139Stack.push({id:e.id,name:e.name}); $('genfilter139').value=''; loadM139(); }
+function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); $('genfilter139').value=''; loadM139(); }
 async function genCas139(i){
   const e=m139Items[i];
   const cur=m139Stack[m139Stack.length-1];
@@ -2180,41 +2187,70 @@ function fillHome139(){
   picked139Path=nm;
   $('target189').value='移动云盘:'+nm;
 }
-function m139GoHome(){
-  const dirs=SETTINGS.mobile_dirs||[];
-  const id=(dirs[0]&&dirs[0].id)||SETTINGS.mobile_home_id;
-  if(!id){ alert('请先在「设置」页配置移动云盘目录'); return; }
-  const nm=((dirs[0]&&dirs[0].name)||SETTINGS.mobile_home_name||'目录').split('/').pop();
-  m139Stack=[{id:id,name:nm}];
-  loadM139();
-}
 let genRoot=null, curEntries=[];
+function renderGenCrumbs(){
+  const el=$('curpath');
+  if(genRoot===null){ el.innerHTML='<span class="crumb">天翼挂载目录</span>'; return; }
+  const roots=tianyiRoots();
+  const label = genRoot===roots[0]? '☁️ 天翼云盘' : '☁️ 天翼目录';
+  let h=(roots.length>1? '<span class="crumb" onclick="genToRoots()">⇄ 全部目录</span> <span class="mut">›</span> ' : '')
+    +'<span class="crumb" onclick="genGoPath(\''+esc(genRoot)+'\')">'+esc(label)+'</span>';
+  const baseParts = genRoot==='/'? [] : genRoot.split('/').filter(Boolean);
+  const allParts = curPath.split('/').filter(Boolean);
+  let acc = genRoot==='/'? '' : genRoot;
+  for(let k=baseParts.length;k<allParts.length;k++){ acc+='/'+allParts[k]; h+=' <span class="mut">›</span> <span class="crumb" onclick="genGoPath(\''+esc(acc)+'\')">'+esc(allParts[k])+'</span>'; }
+  el.innerHTML=h;
+}
+function genToRoots(){ genRoot=null; curPath=''; $('genfilter').value=''; loadList(); }
+function genGoPath(p){ curPath=p; $('genfilter').value=''; loadList(); }
 async function loadList(){
   const roots=tianyiRoots();
   if(genRoot===null){
     if(roots.length===1){ genRoot=roots[0]; curPath=genRoot; }
     else {
-      $('curpath').textContent='天翼挂载目录';
-      $('entries').innerHTML = roots.length? roots.map((r,i)=>'<div class=row><span class=grow>📁 '+esc(r)+'</span><button class="small grey" onclick="genEnterRoot('+i+')">打开</button></div>').join('')
+      renderGenCrumbs();
+      $('entries').innerHTML = roots.length? roots.map((r,i)=>'<div class="row dirrow" onclick="genEnterRoot('+i+')"><span>📁</span><span class="grow">'+esc(i===0? '☁️ 天翼云盘' : '☁️ 天翼目录')+'<br><span class="mut">'+esc(r)+'</span></span></div>').join('')
         : '<div class=mut>请先在「设置」页配置天翼挂载目录</div>';
       return;
     }
   }
+  renderGenCrumbs();
   const d = await api('/api/list?path='+encodeURIComponent(curPath));
   if(!d.ok){ $('entries').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
   curEntries = d.data.entries || [];
-  $('curpath').textContent=curPath;
-  $('entries').innerHTML = d.data.entries.map(e=>{
-    const p = (curPath==='/'?'':curPath)+'/'+e.name;
-    if(e.is_dir) return '<div class=row><span class=grow>📁 '+esc(e.name)+'</span><button class="small" onclick="enterDir(\''+esc(p)+'\')">打开</button></div>';
-    return '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span>'+(e.name.toLowerCase().endsWith('.cas')? '<span class=mut>CAS 文件</span>' : '<button class="small green" onclick="genCas(\''+esc(p)+'\','+e.size+')">生成 CAS</button>')+'</div>';
-  }).join('') || '<div class=mut>空目录</div>';
+  renderGenEntries();
 }
-function genEnterRoot(i){ genRoot=tianyiRoots()[i]; curPath=genRoot; loadList(); }
-function enterDir(p){ curPath=p; loadList(); }
+function renderGenEntries(){
+  const q=(($('genfilter').value)||'').trim().toLowerCase();
+  const vis=curEntries.filter(e=>!q||e.name.toLowerCase().includes(q));
+  $('entries').innerHTML = vis.length? vis.map(e=>{
+    const p = (curPath==='/'?'':curPath)+'/'+e.name;
+    if(e.is_dir) return '<div class="row dirrow" onclick="enterDir(\''+esc(p)+'\')"><span>📁</span><span class="grow">'+esc(e.name)+'</span></div>';
+    return '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span>'+(e.name.toLowerCase().endsWith('.cas')? '<span class=mut>CAS 文件</span>' : '<button class="small green" onclick="genCas(\''+esc(p)+'\','+e.size+')">生成 CAS</button>')+'</div>';
+  }).join('') : '<div class=mut>'+(q?'没有匹配的文件或文件夹':'当前目录为空')+'</div>';
+}
+function genEnterRoot(i){ genRoot=tianyiRoots()[i]; curPath=genRoot; $('genfilter').value=''; loadList(); }
+function enterDir(p){ curPath=p; $('genfilter').value=''; loadList(); }
 function goUp(){
-  if(genRoot!==null && curPath===genRoot){ if(tianyiRoots().length>1){ genRoot=null; loadList(); } return; }
-  if(curPath!=='/'){ curPath=curPath.split('/').slice(0,-1).join('/')||'/'; loadList(); }
+  if(genRoot===null) return;
+  if(curPath===genRoot){ if(tianyiRoots().length>1) genToRoots(); return; }
+  if(curPath!=='/'){ curPath=curPath.split('/').slice(0,-1).join('/')||'/'; $('genfilter').value=''; loadList(); }
+}
+async function genMkdir(cloud){
+  let name = prompt('新目录名');
+  if(name===null) return;
+  name = name.trim();
+  if(!name || name.includes('/')){ alert('目录名不能为空,也不能带 /'); return; }
+  if(cloud==='189'){
+    if(genRoot===null){ alert('请先进入一个挂载目录'); return; }
+    const d = await api('/api/mkdir',{path:(curPath==='/'?'':curPath)+'/'+name});
+    if(d.ok) loadList(); else alert(d.msg);
+  } else {
+    if(!m139Stack.length){ alert('请先进入一个目录'); return; }
+    const cur=m139Stack[m139Stack.length-1];
+    const d = await api('/api/m139/mkdir',{parent:cur.id, name:name});
+    if(d.ok) loadM139(); else alert(d.msg);
+  }
 }
 async function genCas(p,size){
   let up=$('upback').checked;
