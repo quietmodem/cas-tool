@@ -987,6 +987,39 @@ def main():
           and "未保存回原目录" in d["data"]["results"][0]["msg"]
           and captured["remove"] == remove_before, d)
 
+    # qq) v2.12.0:批量删除 CAS(从原目录删除任务保存的同名 .cas)
+    st, d, _ = req("POST", base + "/api/gen",
+                   {"path": "/删除测试/待删源文件.mkv", "size": len(CONTENT),
+                    "upload_back": True})
+    jid_ol_cas = d["data"]["job_id"]
+    job = wait_job(jid_ol_cas)
+    check("删CAS测试的 OpenList 生成完成", job and job["status"] == "done"
+          and bool(job["result"].get("uploaded_to")), job)
+    st, d, _ = req("POST", base + "/api/jobs/delete-cas", {"ids": [jid_ol_cas]})
+    check("OpenList 同名 CAS 已从原目录删除", d["ok"] and d["data"]["deleted"] == 1
+          and captured["remove"][-1] == {"dir": "/删除测试",
+                                         "names": ["待删源文件.mkv.cas"]}, d)
+    job = wait_job(jid_ol_cas)
+    check("OpenList CAS 删除状态已记录", job["result"].get("cas_deleted") is True
+          and not job["result"].get("uploaded_to"), job)
+    st, d, _ = req("POST", base + "/api/jobs/delete-cas", {"ids": [jid_ol_del]})
+    check("源文件已删除时拒绝删 CAS", d["ok"] and d["data"]["deleted"] == 0
+          and "仅剩" in d["data"]["results"][0]["msg"], d)
+    st, d, _ = req("POST", base + "/api/m139/gen",
+                   {"file_id": "FDEL", "name": "待删源文件.mkv",
+                    "size": len(CONTENT), "parent": "DEL139",
+                    "upload_back": True, "path": "删除测试/待删源文件.mkv"})
+    jid_139_cas = d["data"]["job_id"]
+    job = wait_job(jid_139_cas)
+    check("删CAS测试的 139 生成完成", job and job["status"] == "done"
+          and bool(job["result"].get("uploaded_to")), job)
+    trash_before = list(captured["trash139"])
+    st, d, _ = req("POST", base + "/api/jobs/delete-cas", {"ids": [jid_139_cas]})
+    check("139 同名 CAS 已移入回收站", d["ok"] and d["data"]["deleted"] == 1
+          and captured["trash139"] == trash_before + ["CDEL"], d)
+    check("批量删除 CAS 前端齐备", all(x in html for x in
+          ["deleteJobCas", "批量删除 CAS", "/api/jobs/delete-cas"]))
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),

@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.11.1"
+VERSION = "2.12.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -293,6 +293,64 @@ def _delete_job_source_once(jid):
         current["result"] = new_result
     _save_jobs(force=True)
     return "源文件已删除"
+
+
+def delete_job_cas(jid):
+    """删除一个已生成任务保存在源目录中的同名 .cas 文件。
+
+    仅处理已完成且 .cas 已保存回原目录的任务;源文件已删除的任务
+    仅剩 .cas,拒绝删除,避免数据完全丢失。源文件本身不受影响。
+    """
+    with JOBS_LOCK:
+        job = json.loads(json.dumps(JOBS.get(jid) or {}))
+    if not job:
+        raise RuntimeError("任务不存在")
+    if job.get("kind") not in ("gen", "gen139"):
+        raise RuntimeError("该任务不是生成任务")
+    if job.get("status") != "done":
+        raise RuntimeError("任务尚未生成完成")
+    result = job.get("result") or {}
+    if result.get("source_deleted"):
+        raise RuntimeError("源文件已删除,仅剩 .cas,不能删除")
+    if result.get("cas_deleted"):
+        return "CAS 文件已删除"
+    if not result.get("uploaded_to"):
+        raise RuntimeError(".cas 未保存回原目录,无可删除的 CAS 文件")
+    source = _job_source(job)
+    name = source.get("name") or result.get("name") or ""
+    if not name:
+        raise RuntimeError("任务缺少源文件信息,不能删除")
+    cas_name = name + ".cas"
+    if source.get("type") == "ol":
+        parent = source.get("dir") or _split_ol_path(source.get("path") or "")[0]
+        entries = ol_list(parent, refresh=True)
+        if not any(e.get("name") == cas_name and not e.get("is_dir")
+                   for e in entries):
+            raise RuntimeError("源目录未找到该 .cas 文件")
+        ol_post("/fs/remove", {"dir": parent, "names": [cas_name]})
+    elif source.get("type") == "139":
+        parent = source.get("parent") or ""
+        if not parent:
+            raise RuntimeError("任务缺少移动云盘源目录标识,不能删除")
+        entries = ct.list_139_files(m139_basic(), parent)
+        cas_entry = next((e for e in entries
+                          if e.get("name") == cas_name
+                          and not e.get("is_dir")), None)
+        if not cas_entry:
+            raise RuntimeError("源目录未找到该 .cas 文件")
+        ct.trash_139(m139_basic(), cas_entry["id"])
+    else:
+        raise RuntimeError("任务缺少源文件定位信息,不能删除")
+    with JOBS_LOCK:
+        current = JOBS.get(jid)
+        if not current:
+            return "CAS 文件已删除"
+        new_result = dict(current.get("result") or {})
+        new_result["cas_deleted"] = True
+        new_result["uploaded_to"] = None
+        current["result"] = new_result
+    _save_jobs(force=True)
+    return "CAS 文件已删除"
 
 
 def _run_gen(jid, size, opener, name, uploader):
@@ -1068,6 +1126,21 @@ class Handler(BaseHTTPRequestHandler):
                     seen.add(jid)
                     try:
                         msg = delete_job_source(jid)
+                        results.append({"id": jid, "ok": True, "msg": msg})
+                    except Exception as e:  # noqa: BLE001
+                        results.append({"id": jid, "ok": False,
+                                        "msg": str(e)[:300]})
+                deleted = sum(1 for r in results if r["ok"])
+                return self.ok({"deleted": deleted, "results": results})
+            if path == "/api/jobs/delete-cas":
+                results = []
+                seen = set()
+                for jid in body.get("ids") or []:
+                    if jid in seen:
+                        continue
+                    seen.add(jid)
+                    try:
+                        msg = delete_job_cas(jid)
                         results.append({"id": jid, "ok": True, "msg": msg})
                     except Exception as e:  # noqa: BLE001
                         results.append({"id": jid, "ok": False,
@@ -2418,6 +2491,20 @@ async function deleteJobSources(){
     +(failed.length? '<br>'+failed.map(r=>esc(r.msg)).join('<br>') : '');
   loadJobs();
 }
+async function deleteJobCas(){
+  const ids=Array.from(checkedJobIds);
+  if(!ids.length){ alert('请先勾选任务'); return; }
+  const eligible=ids.filter(id=>{ const j=jobRecords[id]; return j && j.status==='done' && j.result && j.result.uploaded_to && !j.result.source_deleted && !j.result.cas_deleted; });
+  if(!eligible.length){ alert('所选任务中没有可删除的 CAS 文件(须生成完成、CAS 已保存回原目录,且源文件未删除)'); return; }
+  if(!await askConfirm('确认从原目录删除所选 '+eligible.length+' 个任务的 CAS 文件?源文件本身不受影响。')) return;
+  $('jobsmsg').textContent='正在删除 CAS 文件…';
+  const d=await api('/api/jobs/delete-cas',{ids:eligible});
+  if(!d.ok){ $('jobsmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
+  const failed=(d.data.results||[]).filter(r=>!r.ok);
+  $('jobsmsg').innerHTML='<span class='+(failed.length? 'err':'good')+'>CAS 文件删除完成: 成功 '+d.data.deleted+' · 失败 '+failed.length+'</span>'
+    +(failed.length? '<br>'+failed.map(r=>esc(r.msg)).join('<br>') : '');
+  loadJobs();
+}
 async function loadJobs(){
   const d = await api('/api/jobs');
   if(!d.ok) return;
@@ -2426,13 +2513,13 @@ async function loadJobs(){
   d.data.forEach(j=>{ jobRecords[j.id]=j; if(j.status==='done'&&j.result&&j.result.cas_b64) genResults[j.id]={name:j.result.name, b64:j.result.cas_b64}; });
   checkedJobIds=new Set(Array.from(checkedJobIds).filter(id=>jobRecords[id]));
   $('jobs').innerHTML =
-    '<div class=row style="flex-wrap:wrap"><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small green" onclick="downloadJobsZip()">批量下载 CAS</button><button class="small grey" onclick="deleteJobSources()">删除源文件</button><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
+    '<div class=row style="flex-wrap:wrap"><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small green" onclick="downloadJobsZip()">批量下载 CAS</button><button class="small grey" onclick="deleteJobCas()">批量删除 CAS</button><button class="small grey" onclick="deleteJobSources()">删除源文件</button><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
     + d.data.map(j=>
     '<div style="margin:8px 0"><div><label><input type="checkbox" class="jobchk" data-id="'+j.id+'" style="width:auto" onchange="jobCheckChanged(this)"'+(checkedJobIds.has(j.id)? ' checked':'')+'> '+esc(j.title)+'</label></div>'
     +(j.path? '<div class=kv>📁 '+esc(j.path)+'</div>':'')+
     '<div class=mut>'+esc(j.status)+(j.progress!=null? ' · '+j.progress+'%':'')+' · '+esc(j.message||'')+'</div>'+
     (j.progress!=null&&j.status==='running'? '<div class=bar><i style="width:'+j.progress+'%"></i></div>':'')+
-    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已保存至 '+esc(j.result.uploaded_to):'')+(j.result.source_deleted? ' · 源文件已删除':'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
+    (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已保存至 '+esc(j.result.uploaded_to):'')+(j.result.source_deleted? ' · 源文件已删除':'')+(j.result.cas_deleted? ' · CAS 文件已从原目录删除':'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
     '</div>').join('');
 }
 status(); loadSettings(); loadList(); loadJobs(); refreshBtns();
