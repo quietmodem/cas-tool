@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.10.0"
+VERSION = "2.11.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1340,9 +1340,11 @@ button:disabled{opacity:.35}
 <div class="tabbar">
 <button id="tabbtn-restore" class="tabbtn on" onclick="switchTab('restore')">CAS 还原</button>
 <button id="tabbtn-gen" class="tabbtn" onclick="switchTab('gen')">CAS 生成</button>
+<button id="tabbtn-scan" class="tabbtn" onclick="switchTab('scan')">CAS 扫描</button>
 <button id="tabbtn-settings" class="tabbtn" onclick="switchTab('settings')">设置</button>
 </div>
 
+<div id="confirmbox" class="overlay" style="display:none"><div class="sheet"><div id="confirmtext" style="margin-bottom:14px"></div><div class="row"><button class="grey grow" onclick="confirmDone(false)">取消</button><button class="grow" onclick="confirmDone(true)">确认</button></div></div></div>
 <div id="picker" class="overlay" style="display:none" onclick="if(event.target===this)togglePicker()"><div class="sheet">
 <div class="row"><b class="grow">📁 选择目录</b>
 <button class="small green" onclick="pickerUse()">✔ 用当前目录</button>
@@ -1384,24 +1386,7 @@ button:disabled{opacity:.35}
 <button class="green" id="btnTy" onclick="doRestore('tianyi')">还原到天翼云盘</button>
 <button class="green" id="btnMb" onclick="doRestore('mobile')">还原到移动云盘</button>
 </div><div id="restoremsg" class="msg"></div>
-<div style="border-top:1px solid #eef0f4;margin-top:14px;padding-top:12px">
-<h2>🔍 扫描网盘CAS</h2>
-<div class="row"><input id="scanpath" class="grow" placeholder="要扫描的目录(选目录里可切换天翼/移动)" oninput="scanSrc='ol';scan139=null">
-<button class="small grey" onclick="togglePicker('scanpath')">📁 选目录</button>
-<button class="small" onclick="scanCas()">开始扫描</button></div>
-<label class="mut"><input type="checkbox" id="scanrec" style="width:auto" checked> 包含子文件夹(递归最多 6 层,最多取 300 份)</label>
-<div id="scanmsg" class="msg"></div>
-<div id="scanlist"></div>
-<div id="scanbtns" style="display:none">
-<div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选可还原</button>
-<button class="small grey" onclick="scanCheckAll(false)">全不选</button>
-<span class="mut">全选仅选择可还原条目；推送时目标目录用上方还原区</span></div>
-<div class="row"><button class="green" onclick="pushScanToRestore()">⬆ 推送到还原区</button>
-<button onclick="restoreScanInPlace()">原目录还原</button></div>
-<div id="scanrestoremsg" class="msg"></div>
 </div>
-</div></div>
-
 </div>
 
 <div id="tab-gen" style="display:none">
@@ -1426,6 +1411,25 @@ button:disabled{opacity:.35}
 
 <div class="card"><h2>任务</h2><div id="jobs" class="mut">暂无</div><div id="jobsmsg" class="msg"></div></div>
 </div>
+
+<div id="tab-scan" style="display:none">
+<div class="card"><h2>🔍 扫描网盘CAS</h2>
+<div class="row"><input id="scanpath" class="grow" placeholder="要扫描的目录(选目录里可切换天翼/移动)" oninput="scanSrc='ol';scan139=null">
+<button class="small grey" onclick="togglePicker('scanpath')">📁 选目录</button>
+<button class="small" onclick="scanCas()">开始扫描</button></div>
+<label class="mut"><input type="checkbox" id="scanrec" style="width:auto" checked> 包含子文件夹(递归最多 6 层,最多取 300 份)</label>
+<div id="scanmsg" class="msg"></div>
+<div id="scanlist"></div>
+<div id="scanbtns" style="display:none">
+<div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选可还原</button>
+<button class="small grey" onclick="scanCheckAll(false)">全不选</button>
+<span class="mut">全选仅选择可还原条目</span></div>
+<div class="row"><button class="green" onclick="pushScanToRestore()">⬆ 推送到还原区</button>
+<button onclick="restoreScanInPlace()">原目录还原</button>
+<button class="grey" onclick="downloadScanZip()">⬇ 打包下载所选</button></div>
+<div id="scanrestoremsg" class="msg"></div>
+</div>
+</div></div>
 
 <div id="tab-settings" style="display:none">
 <div class="card"><h2>☁️ 天翼云盘</h2>
@@ -1608,8 +1612,8 @@ function pushScanToRestore(){
   $('restorebox').style.display='block';
   refreshBtns();
   $('scanrestoremsg').innerHTML='<span class=good>已推送 '+added+' 份到还原区</span>'
-    +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'')
-    +' —— 请在上方还原区选择目标目录后执行还原';
+    +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'');
+  switchTab('restore');
   window.scrollTo({top:0, behavior:'smooth'});
 }
 let scanRestoring=false;
@@ -1708,7 +1712,7 @@ dz.addEventListener('drop',e=>{ const fs=e.dataTransfer.files; if(fs && fs.lengt
 ['dragover','drop'].forEach(ev=>window.addEventListener(ev,e=>e.preventDefault()));
 let pickerPath='/', pickerTarget='target189', pickerScope=null;
 function switchTab(name){
-  for(const n of ['restore','gen','settings']){
+  for(const n of ['restore','gen','scan','settings']){
     $('tab-'+n).style.display = n===name? 'block':'none';
     $('tabbtn-'+n).classList.toggle('on', n===name);
   }
@@ -2351,13 +2355,50 @@ async function pushGenToRestore(jid, btn){
 }
 function jobsAll(v){ document.querySelectorAll('.jobchk').forEach(c=>{ c.checked=v; if(v) checkedJobIds.add(c.dataset.id); else checkedJobIds.delete(c.dataset.id); }); }
 function jobCheckChanged(c){ if(c.checked) checkedJobIds.add(c.dataset.id); else checkedJobIds.delete(c.dataset.id); }
+let confirmResolve=null;
+function askConfirm(text){ return new Promise(res=>{ confirmResolve=res; $('confirmtext').textContent=text; $('confirmbox').style.display='flex'; }); }
+function confirmDone(v){ $('confirmbox').style.display='none'; if(confirmResolve){ const r=confirmResolve; confirmResolve=null; r(v); } }
+function b64ToBytes(b64){ const s=atob(b64); const u=new Uint8Array(s.length); for(let i=0;i<s.length;i++) u[i]=s.charCodeAt(i); return u; }
+const CRC_TABLE=(()=>{ const t=[]; for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c=c&1? (0xEDB88320^(c>>>1)) : (c>>>1); t[n]=c>>>0; } return t; })();
+function crc32(u){ let c=0xFFFFFFFF; for(let i=0;i<u.length;i++) c=CRC_TABLE[(c^u[i])&0xFF]^(c>>>8); return (c^0xFFFFFFFF)>>>0; }
+function concatU8(parts){ let len=0; parts.forEach(p=>len+=p.length); const out=new Uint8Array(len); let o=0; parts.forEach(p=>{ out.set(p,o); o+=p.length; }); return out; }
+function makeZip(files){
+  const enc=new TextEncoder(); const locals=[]; const centrals=[]; let offset=0;
+  const u16=v=>new Uint8Array([v&255,(v>>>8)&255]);
+  const u32=v=>new Uint8Array([v&255,(v>>>8)&255,(v>>>16)&255,(v>>>24)&255]);
+  for(const f of files){
+    const name=enc.encode(f.name), data=f.bytes, crc=crc32(data);
+    const lh=concatU8([u32(0x04034b50),u16(20),u16(0x0800),u16(0),u16(0),u16(0x5821),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),name]);
+    locals.push(lh,data);
+    centrals.push(concatU8([u32(0x02014b50),u16(20),u16(20),u16(0x0800),u16(0),u16(0),u16(0x5821),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),name]));
+    offset+=lh.length+data.length;
+  }
+  const central=concatU8(centrals);
+  const end=concatU8([u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(central.length),u32(offset),u16(0)]);
+  return new Blob([concatU8(locals.concat([central,end]))],{type:'application/zip'});
+}
+function dedupeNames(files){ const seen={}; files.forEach(f=>{ if(seen[f.name]){ seen[f.name]++; const dot=f.name.lastIndexOf('.'); f.name = dot>0? f.name.slice(0,dot)+'('+seen[f.name]+')'+f.name.slice(dot) : f.name+'('+seen[f.name]+')'; } else seen[f.name]=1; }); return files; }
+function saveBlob(blob, filename){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href), 4000); }
+function downloadScanZip(){
+  const sel=[];
+  scanItems.forEach((it,i)=>{ const c=document.querySelector('.scanchk[data-i="'+i+'"]'); if(c && c.checked && it.b64) sel.push(it); });
+  if(!sel.length){ alert('请先勾选要打包下载的 CAS'); return; }
+  saveBlob(makeZip(dedupeNames(sel.map(it=>({name:it.name, bytes:b64ToBytes(it.b64)})))), 'cas-scan.zip');
+}
+function downloadJobsZip(){
+  const files=[];
+  Array.from(checkedJobIds).forEach(id=>{ const j=jobRecords[id];
+    if(j && j.status==='done' && j.result && j.result.cas_b64) files.push({name:(j.result.name||'file')+'.cas', bytes:b64ToBytes(j.result.cas_b64)}); });
+  if(!files.length){ alert('请先勾选已生成完成的任务'); return; }
+  saveBlob(makeZip(dedupeNames(files)), 'cas-jobs.zip');
+}
 async function clearJobs(all){
   let ids=[];
   if(!all){
     ids=Array.from(checkedJobIds);
     if(!ids.length){ alert('请先勾选要清空的任务'); return; }
   }
-  if(!confirm(all? '清空全部任务记录?(只清列表,不删除已生成的 cas 文件)' : '清空所选 '+ids.length+' 条任务记录?(只清列表,不删除已生成的 cas 文件)')) return;
+  if(!await askConfirm(all? '确认清空全部任务记录?(只清列表,不删除已生成的 CAS 文件)' : '确认清空所选 '+ids.length+' 条任务记录?(只清列表,不删除已生成的 CAS 文件)')) return;
   const d = await api('/api/jobs/clear', all? {all:true} : {ids:ids});
   if(d.ok){ if(all) checkedJobIds.clear(); else ids.forEach(id=>checkedJobIds.delete(id)); loadJobs(); } else alert(d.msg);
 }
@@ -2366,7 +2407,7 @@ async function deleteJobSources(){
   if(!ids.length){ alert('请先勾选要删除源文件的生成任务'); return; }
   const eligible=ids.filter(id=>{ const j=jobRecords[id]; return j && j.status==='done' && j.result && j.result.uploaded_to && !j.result.source_deleted; });
   if(!eligible.length){ alert('所选任务中没有可删除源文件的任务(须生成完成,且 .cas 已保存回原目录)'); return; }
-  if(!confirm('将删除所选 '+eligible.length+' 个任务的源文件,仅保留 .cas。是否继续?')) return;
+  if(!await askConfirm('确认删除所选 '+eligible.length+' 个任务的源文件?删除后仅保留 CAS 文件,源文件不可恢复。')) return;
   $('jobsmsg').textContent='正在删除源文件…';
   const d=await api('/api/jobs/delete-source',{ids:eligible});
   if(!d.ok){ $('jobsmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
@@ -2383,7 +2424,7 @@ async function loadJobs(){
   d.data.forEach(j=>{ jobRecords[j.id]=j; if(j.status==='done'&&j.result&&j.result.cas_b64) genResults[j.id]={name:j.result.name, b64:j.result.cas_b64}; });
   checkedJobIds=new Set(Array.from(checkedJobIds).filter(id=>jobRecords[id]));
   $('jobs').innerHTML =
-    '<div class=row style="flex-wrap:wrap"><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small grey" onclick="deleteJobSources()">删除源文件</button><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
+    '<div class=row style="flex-wrap:wrap"><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small green" onclick="downloadJobsZip()">批量下载 CAS</button><button class="small grey" onclick="deleteJobSources()">删除源文件</button><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
     + d.data.map(j=>
     '<div style="margin:8px 0"><div><label><input type="checkbox" class="jobchk" data-id="'+j.id+'" style="width:auto" onchange="jobCheckChanged(this)"'+(checkedJobIds.has(j.id)? ' checked':'')+'> '+esc(j.title)+'</label></div>'
     +(j.path? '<div class=kv>📁 '+esc(j.path)+'</div>':'')+

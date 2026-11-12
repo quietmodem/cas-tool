@@ -910,6 +910,23 @@ def main():
           ["batchGenOl", "batchGen139", "genCheckAll", "genCheckAll139",
            "genSel", "genSel139", "批量生成 CAS", "genChkChange",
            "genChk139Change"]))
+    # oo) v2.11.0:扫描独立选项卡 + 批量打包下载 + 确认对话框
+    check("扫描为独立选项卡且位于生成与设置之间",
+          'id="tab-scan"' in html and 'id="tabbtn-scan"' in html
+          and html.index('id="tabbtn-gen"') < html.index('id="tabbtn-scan"')
+          < html.index('id="tabbtn-settings"')
+          and html.index('id="tab-gen"') < html.index('id="tab-scan"')
+          < html.index('id="tab-settings"')
+          and "'scan'" in html)
+    check("扫描块已移出还原页",
+          html.index("扫描网盘CAS") > html.index('id="tab-scan"'))
+    check("批量打包下载齐备", all(x in html for x in
+          ["downloadScanZip", "downloadJobsZip", "makeZip", "crc32",
+           "dedupeNames", "cas-scan.zip", "cas-jobs.zip", "打包下载所选",
+           "批量下载 CAS"]))
+    check("删除与清空使用确认对话框", all(x in html for x in
+          ["askConfirm", "confirmbox", "confirmDone"])
+          and html.count("await askConfirm") >= 2)
     check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
           and "/api/jobs/delete-source" in html)
     check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html
