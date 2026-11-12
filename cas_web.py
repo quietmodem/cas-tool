@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.7.3"
+VERSION = "2.7.4"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1355,7 +1355,7 @@ button:disabled{opacity:.35}
 <div class="row"><input id="pickerfilter" class="grow" placeholder="筛选本层文件夹…" oninput="renderPicker()">
 <button class="small grey" id="ph189" onclick="pickerHome('189')">天翼挂载目录</button></div>
 <div id="pickerlist"></div>
-<div class="row"><button class="small grey" onclick="mkdirHere('189')">＋ 新建目录</button></div>
+<div class="row"><button class="small grey" onclick="pickerUp()">⬆ 上级</button><button class="small grey" onclick="mkdirHere('189')">＋ 新建目录</button></div>
 </div>
 <div id="pane139" style="display:none">
 <div id="warn139" class="msg err" style="display:none"></div>
@@ -1881,7 +1881,8 @@ function renderCrumbs(){
     if(!pickerScope.base){ $('crumbs').innerHTML='<span class="crumb">先选一个云盘挂载目录</span>'; return; }
     const base=pickerScope.base;
     const root=pickerScope.roots.find(r=>r.path===base);
-    let h='<span class="crumb" onclick="pickerToChoice()">'+esc(root? root.label : '挂载目录')+'</span>';
+    let h=(pickerScope.roots.length>1? '<span class="crumb" onclick="pickerToChoice()">⇄ 全部目录</span> <span class="mut">›</span> ' : '')
+      +'<span class="crumb" onclick="pickerGo(\''+esc(base)+'\')">'+esc(root? root.label : '挂载目录')+'</span>';
     const baseParts = base==='/'? [] : base.split('/').filter(Boolean);
     const allParts = pickerPath.split('/').filter(Boolean);
     let acc = base==='/'? '' : base;
@@ -1913,7 +1914,7 @@ function pickerGo(p){
 }
 function pickerEnter(p){ pickerGo(p); }
 function pickerUp(){
-  if(pickerScope && pickerScope.base && pickerPath===pickerScope.base){ pickerToChoice(); return; }
+  if(pickerScope && pickerScope.base && pickerPath===pickerScope.base){ if(pickerScope.roots.length>1) pickerToChoice(); return; }
   if(pickerPath && pickerPath!=='/') pickerGo(pickerPath.split('/').slice(0,-1).join('/')||'/');
 }
 function pickerHome(which){ const v=SETTINGS.tianyi_home; if(v){ pickerGo(v); } else alert('未设置挂载目录,请先在「设置」页配置'); }

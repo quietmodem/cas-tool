@@ -875,6 +875,10 @@ def main():
     casfile_tag = html.split('id="casfile"')[1].split(">")[0] if 'id="casfile"' in html else ""
     check("文件选择不限制扩展名(iOS 可选 .cas)", "accept" not in casfile_tag,
           casfile_tag)
+    # kk) v2.7.4:天翼选择器进子目录后可回退到第一级(根面包屑直达 base + 上级按钮)
+    check("选择器根面包屑直达第一级", "esc(base)" in html
+          and "⇄ 全部目录" in html)
+    check("选择器有上级按钮", "pickerUp()" in html and "⬆ 上级" in html)
     check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
           and "/api/jobs/delete-source" in html)
     check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html
