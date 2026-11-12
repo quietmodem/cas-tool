@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.7.4"
+VERSION = "2.8.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1360,8 +1360,9 @@ button:disabled{opacity:.35}
 <div id="pane139" style="display:none">
 <div id="warn139" class="msg err" style="display:none"></div>
 <div id="p139crumbs" class="crumbs"></div>
+<div class="row"><input id="p139filter" class="grow" placeholder="筛选本层文件夹…" oninput="render139Picker()"></div>
 <div id="p139list"></div>
-<div class="row"><button class="small grey" onclick="mkdirHere('139')">＋ 新建目录</button><button class="small grey" onclick="p139SaveDir()">＋ 把当前目录存到设置</button></div>
+<div class="row"><button class="small grey" onclick="p139Up()">⬆ 上级</button><button class="small grey" onclick="mkdirHere('139')">＋ 新建目录</button><button class="small grey" onclick="p139SaveDir()">＋ 把当前目录存到设置</button></div>
 </div>
 </div></div>
 
@@ -1415,11 +1416,11 @@ button:disabled{opacity:.35}
 <div id="entries"></div></div>
 <div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 CAS</h2>
 <div class="row"><label class="mut"><input type="checkbox" id="upback139" style="width:auto" checked> 生成后,CAS文件保存至同目录</label></div>
-<div class="row"><button class="small grey" onclick="m139Roots()">🏠 目录</button>
-<button class="small grey" onclick="m139GoHome()">⭐ 默认目录</button>
+<div class="row"><button class="small grey" onclick="m139UpBtn()">⬆ 上级</button>
 <span class="grow" id="m139crumbs">移动云盘</span>
 <button class="small grey" onclick="loadM139()">刷新</button></div>
-<div class="mut">通过 139 接口直接浏览,不经 OpenList;生成的CAS文件可在下方任务中下载,或按上方选项保存至同目录。</div>
+<div class="row"><button class="small grey" onclick="m139Roots()">🏠 全部目录</button>
+<button class="small grey" onclick="m139GoHome()">跳到移动默认目录</button></div>
 <div id="m139entries"></div></div>
 
 <div class="card"><h2>任务</h2><div id="jobs" class="mut">暂无</div><div id="jobsmsg" class="msg"></div></div>
@@ -1928,24 +1929,45 @@ function pickerPick(p){
   $('picker').style.display='none';
 }
 function p139CurName(){ return p139Stack.map(c=>c.name).join('/'); }
+function render139Crumbs(){
+  const cr=$('p139crumbs');
+  if(!p139Stack.length){ cr.innerHTML='<span class="crumb">移动云盘目录</span>'; return; }
+  let h=(pickerRoots139().length>1? '<span class="crumb" onclick="p139ToRoots()">⇄ 全部目录</span> <span class="mut">›</span> ' : '');
+  p139Stack.forEach((c,i)=>{ if(i) h+=' <span class="mut">›</span> '; h+='<span class="crumb" onclick="p139GoLevel('+i+')">'+esc(c.name)+'</span>'; });
+  cr.innerHTML=h;
+}
+function p139ToRoots(){ p139Stack=[]; $('p139filter').value=''; load139Pane(); }
+function p139GoLevel(i){ p139Stack=p139Stack.slice(0,i+1); $('p139filter').value=''; load139Pane(); }
 async function load139Pane(){
-  const box=$('p139list'), cr=$('p139crumbs');
+  render139Crumbs();
+  const box=$('p139list');
   if(!p139Stack.length){
-    cr.textContent='移动云盘目录';
-    box.innerHTML = pickerRoots139().map((r,i)=>'<div class="row dirrow" onclick="p139EnterRoot('+i+')"><span>📁</span><span class="grow">'+esc(r.name)+'<br><span class="mut">'+esc(r.id)+'</span></span></div>').join('');
+    box.innerHTML = pickerRoots139().map((r,i)=>'<div class="row dirrow" onclick="p139EnterRoot('+i+')"><span>📁</span><span class="grow">'+esc(r.name)+'</span></div>').join('')
+      || '<div class="mut" style="padding:8px 2px">未配置目录(设置页「移动云盘目录」)</div>';
     return;
   }
-  cr.textContent = p139CurName();
   box.innerHTML='<div class="mut" style="padding:8px 2px">加载中…</div>';
   const cur=p139Stack[p139Stack.length-1];
   const d = await api('/api/m139/list',{parent:cur.id});
   if(!d.ok){ box.innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
   p139Items=d.data.items.filter(e=>e.is_dir);
-  box.innerHTML = '<div class=row><button class="small grey" onclick="p139Up()">⬆ 上一级</button></div>'
-    + (p139Items.map((e,i)=>'<div class="row dirrow" onclick="p139Down('+i+')"><span>📁</span><span class="grow">'+esc(e.name)+'</span></div>').join('') || '<div class="mut" style="padding:8px 2px">当前目录无子文件夹,可点「✔ 用当前目录」确认</div>');
+  render139Picker();
 }
-function p139EnterRoot(i){ const r=pickerRoots139()[i]; p139Stack=[{id:r.id,name:r.name}]; load139Pane(); }
-function p139Down(i){ const e=p139Items[i]; p139Stack.push({id:e.id,name:e.name}); load139Pane(); }
+function render139Picker(){
+  const box=$('p139list'); if(!box || !p139Stack.length) return;
+  const q=(($('p139filter').value)||'').trim().toLowerCase();
+  const vis=p139Items.map((e,i)=>({e:e,i:i})).filter(x=>!q||x.e.name.toLowerCase().includes(q));
+  box.innerHTML = vis.length? vis.map(x=>'<div class="row dirrow" onclick="p139Down('+x.i+')"><span>📁</span><span class="grow">'+esc(x.e.name)+'</span>'
+      +'<button class="small green" onclick="event.stopPropagation();p139Pick('+x.i+')">选这个</button></div>').join('')
+    : '<div class="mut" style="padding:8px 2px">'+(q?'没有匹配的文件夹':'当前层级无子文件夹,可点「✔ 用当前目录」确认')+'</div>';
+}
+function p139Pick(i){
+  const e=p139Items[i];
+  p139Stack.push({id:e.id, name:e.name});
+  pickerUse();
+}
+function p139EnterRoot(i){ const r=pickerRoots139()[i]; p139Stack=[{id:r.id,name:r.name}]; $('p139filter').value=''; load139Pane(); }
+function p139Down(i){ const e=p139Items[i]; p139Stack.push({id:e.id,name:e.name}); $('p139filter').value=''; load139Pane(); }
 function p139Up(){ p139Stack.pop(); load139Pane(); }
 async function p139SaveDir(){
   if(!p139Stack.length){ alert('请先进入一个目录'); return; }
@@ -2126,6 +2148,7 @@ async function loadM139(){
 }
 function m139EnterRoot(i){ const r=pickerRoots139()[i]; m139Stack=[{id:r.id,name:r.name}]; loadM139(); }
 function m139Roots(){ m139Stack=[]; loadM139(); }
+function m139UpBtn(){ if(m139Stack.length>1){ m139Stack.pop(); loadM139(); } else if(m139Stack.length===1){ m139Roots(); } }
 function m139Down(i){ const e=m139Items[i]; m139Stack.push({id:e.id,name:e.name}); loadM139(); }
 function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); loadM139(); }
 async function genCas139(i){

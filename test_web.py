@@ -879,6 +879,17 @@ def main():
     check("选择器根面包屑直达第一级", "esc(base)" in html
           and "⇄ 全部目录" in html)
     check("选择器有上级按钮", "pickerUp()" in html and "⬆ 上级" in html)
+    # ll) v2.8.0:选目录双云操作统一(移动向天翼看齐)
+    check("移动选择器面包屑可点击", all(x in html for x in
+          ["render139Crumbs", "p139GoLevel", "p139ToRoots"]))
+    check("移动选择器行内选这个与筛选", all(x in html for x in
+          ["p139Pick", "p139filter", "render139Picker", "没有匹配的文件夹"]))
+    check("移动选择器上级按钮与空目录文案", 'onclick="p139Up()">⬆ 上级' in html
+          and "当前层级无子文件夹" in html and "当前目录无子文件夹" not in html)
+    check("移动根条目不显示目录 ID", "esc(r.id)" not in html)
+    check("生成页移动浏览与天翼同构", all(x in html for x in
+          ["m139UpBtn", "跳到移动默认目录", "🏠 全部目录"])
+          and "⭐ 默认目录" not in html)
     check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
           and "/api/jobs/delete-source" in html)
     check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html
