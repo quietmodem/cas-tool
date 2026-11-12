@@ -927,6 +927,9 @@ def main():
     check("删除与清空使用确认对话框", all(x in html for x in
           ["askConfirm", "confirmbox", "confirmDone"])
           and html.count("await askConfirm") >= 2)
+    # pp) v2.11.1:扫描区补普通「全选」(不区分原文件状态)
+    check("扫描区有普通全选", "scanCheckAllFull" in html
+          and 'onclick="scanCheckAllFull()">全选</button>' in html)
     check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
           and "/api/jobs/delete-source" in html)
     check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html

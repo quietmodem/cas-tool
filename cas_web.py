@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.11.0"
+VERSION = "2.11.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1421,9 +1421,10 @@ button:disabled{opacity:.35}
 <div id="scanmsg" class="msg"></div>
 <div id="scanlist"></div>
 <div id="scanbtns" style="display:none">
-<div class="row"><button class="small grey" onclick="scanCheckAll(true)">全选可还原</button>
+<div class="row"><button class="small grey" onclick="scanCheckAllFull()">全选</button>
+<button class="small grey" onclick="scanCheckAll(true)">全选可还原</button>
 <button class="small grey" onclick="scanCheckAll(false)">全不选</button>
-<span class="mut">全选仅选择可还原条目</span></div>
+<span class="mut">「全选可还原」仅选择可还原条目</span></div>
 <div class="row"><button class="green" onclick="pushScanToRestore()">⬆ 推送到还原区</button>
 <button onclick="restoreScanInPlace()">原目录还原</button>
 <button class="grey" onclick="downloadScanZip()">⬇ 打包下载所选</button></div>
@@ -1597,6 +1598,7 @@ function renderScan(){ setTimeout(refreshBtns, 0);
     '<br><span class=kv>来源: '+esc(it.src)+'</span></div>').join('');
 }
 function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>{ const it=scanItems[Number(c.dataset.i)]; c.checked = v && it && it.origState==='missing'; }); refreshBtns(); }
+function scanCheckAllFull(){ document.querySelectorAll('.scanchk').forEach(c=>{ c.checked=true; }); refreshBtns(); }
 function scanSetSt(i,txt,cls){ const el=$('sst'+i); if(el){ el.textContent=txt; el.className=cls; } }
 function pushScanToRestore(){
   const picked=[];
