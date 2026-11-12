@@ -903,6 +903,13 @@ def main():
           and "m139GoHome" not in html)
     check("生成页空目录文案统一", "当前目录为空" in html
           and "(空文件夹)" not in html)
+    # nn) v2.10.0:卡片标题对称 + 生成页批量多选生成
+    check("生成页两卡片标题一致", html.count("浏览网盘 · 生成 CAS") == 2
+          and "移动云盘(直连) · 生成 CAS" not in html)
+    check("生成页双云批量生成齐备", all(x in html for x in
+          ["batchGenOl", "batchGen139", "genCheckAll", "genCheckAll139",
+           "genSel", "genSel139", "批量生成 CAS", "genChkChange",
+           "genChk139Change"]))
     check("任务区有删除源文件", "deleteJobSources" in html and "删除源文件" in html
           and "/api/jobs/delete-source" in html)
     check("旁存文案已书面化", "还原成功后,CAS文件保存至同目录" in html

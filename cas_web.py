@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.9.0"
+VERSION = "2.10.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1411,13 +1411,15 @@ button:disabled{opacity:.35}
 <div class="row"><span class="grow crumbs" id="curpath" style="padding-top:0">/</span>
 <button class="small grey" onclick="loadList()">刷新</button></div>
 <div class="row"><input id="genfilter" class="grow" placeholder="筛选本层文件或文件夹…" oninput="renderGenEntries()"></div>
+<div class="row"><button class="small grey" onclick="genCheckAll(true)">全选</button><button class="small grey" onclick="genCheckAll(false)">全不选</button><button class="small green" id="genbatchbtn" onclick="batchGenOl()">批量生成 CAS</button></div>
 <label class="mut"><input type="checkbox" id="upback" style="width:auto" checked> 生成后,CAS文件保存至同目录</label>
 <div id="entries"></div>
 <div class="row"><button class="small grey" onclick="goUp()">⬆ 上级</button><button class="small grey" onclick="genMkdir('189')">＋ 新建目录</button></div></div>
-<div class="card" id="m139browse" style="display:none"><h2>移动云盘(直连) · 生成 CAS</h2>
+<div class="card" id="m139browse" style="display:none"><h2>浏览网盘 · 生成 CAS</h2>
 <div class="row"><span class="grow crumbs" id="m139crumbs" style="padding-top:0">移动云盘</span>
 <button class="small grey" onclick="loadM139()">刷新</button></div>
 <div class="row"><input id="genfilter139" class="grow" placeholder="筛选本层文件或文件夹…" oninput="renderM139Entries()"></div>
+<div class="row"><button class="small grey" onclick="genCheckAll139(true)">全选</button><button class="small grey" onclick="genCheckAll139(false)">全不选</button><button class="small green" id="genbatchbtn139" onclick="batchGen139()">批量生成 CAS</button></div>
 <label class="mut"><input type="checkbox" id="upback139" style="width:auto" checked> 生成后,CAS文件保存至同目录</label>
 <div id="m139entries"></div>
 <div class="row"><button class="small grey" onclick="m139UpBtn()">⬆ 上级</button><button class="small grey" onclick="genMkdir('139')">＋ 新建目录</button></div></div>
@@ -2115,7 +2117,7 @@ async function doRestore(to){
   $('restoremsg').innerHTML='批量还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标目录: '+esc(r.target)+')';
 }
 let browseSrc='ol';
-let m139Stack=[], m139Items=[];
+let m139Stack=[], m139Items=[], genSel139=new Set();
 function setBrowseSrc(s){
   browseSrc=s;
   $('olbrowse').style.display = s==='ol'? '' : 'none';
@@ -2150,14 +2152,17 @@ function renderM139Entries(){
   const vis=m139Items.map((e,i)=>({e:e,i:i})).filter(x=>!q||x.e.name.toLowerCase().includes(q));
   $('m139entries').innerHTML = vis.length? vis.map(x=> x.e.is_dir
     ? '<div class="row dirrow" onclick="m139Down('+x.i+')"><span>📁</span><span class="grow">'+esc(x.e.name)+'</span></div>'
-    : '<div class=row><span class=grow>📄 '+esc(x.e.name)+'<br><span class=mut>'+x.e.size+' 字节</span></span>'+(x.e.name.toLowerCase().endsWith('.cas')? '<span class=mut>CAS 文件</span>' : '<button class="small green" onclick="genCas139('+x.i+')">生成 CAS</button>')+'</div>'
+    : (x.e.name.toLowerCase().endsWith('.cas')
+      ? '<div class=row><span class=grow>📄 '+esc(x.e.name)+'<br><span class=mut>'+x.e.size+' 字节</span></span><span class=mut>CAS 文件</span></div>'
+      : '<div class=row><input type="checkbox" style="width:auto" onchange="genChk139Change(this,'+x.i+')"'+(genSel139.has(x.e.id)?' checked':'')+'><span class=grow>📄 '+esc(x.e.name)+'<br><span class=mut>'+x.e.size+' 字节</span></span><button class="small green" onclick="genCas139('+x.i+')">生成 CAS</button></div>')
   ).join('') : '<span class=mut>'+(q?'没有匹配的文件或文件夹':'当前目录为空')+'</span>';
+  updateGenBatchBtn139();
 }
-function m139EnterRoot(i){ const r=pickerRoots139()[i]; m139Stack=[{id:r.id,name:r.name}]; $('genfilter139').value=''; loadM139(); }
-function m139Roots(){ m139Stack=[]; $('genfilter139').value=''; loadM139(); }
-function m139UpBtn(){ if(m139Stack.length>1){ m139Stack.pop(); $('genfilter139').value=''; loadM139(); } else if(m139Stack.length===1){ m139Roots(); } }
-function m139Down(i){ const e=m139Items[i]; m139Stack.push({id:e.id,name:e.name}); $('genfilter139').value=''; loadM139(); }
-function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); $('genfilter139').value=''; loadM139(); }
+function m139EnterRoot(i){ const r=pickerRoots139()[i]; m139Stack=[{id:r.id,name:r.name}]; genSel139.clear(); $('genfilter139').value=''; loadM139(); }
+function m139Roots(){ m139Stack=[]; genSel139.clear(); $('genfilter139').value=''; loadM139(); }
+function m139UpBtn(){ if(m139Stack.length>1){ genSel139.clear(); m139Stack.pop(); $('genfilter139').value=''; loadM139(); } else if(m139Stack.length===1){ m139Roots(); } }
+function m139Down(i){ const e=m139Items[i]; m139Stack.push({id:e.id,name:e.name}); genSel139.clear(); $('genfilter139').value=''; loadM139(); }
+function m139Up(i){ m139Stack=m139Stack.slice(0,i+1); genSel139.clear(); $('genfilter139').value=''; loadM139(); }
 async function genCas139(i){
   const e=m139Items[i];
   const cur=m139Stack[m139Stack.length-1];
@@ -2170,6 +2175,39 @@ async function genCas139(i){
     parent:cur? cur.id : '/', upload_back:up, overwrite:ow,
     path:m139Stack.map(c=>c.name).join('/')+'/'+e.name});
   if(d.ok){ alert('已开始生成,进度见「任务」区'); loadJobs(); } else alert(d.msg);
+}
+function genChk139Change(cb,i){ const e=m139Items[i]; if(cb.checked) genSel139.add(e.id); else genSel139.delete(e.id); updateGenBatchBtn139(); }
+function updateGenBatchBtn139(){ const b=$('genbatchbtn139'); if(b) b.textContent='批量生成 CAS'+(genSel139.size? ' ('+genSel139.size+')' : ''); }
+function genCheckAll139(v){
+  const q=(($('genfilter139').value)||'').trim().toLowerCase();
+  m139Items.forEach(e=>{
+    if(e.is_dir || e.name.toLowerCase().endsWith('.cas')) return;
+    if(q && !e.name.toLowerCase().includes(q)) return;
+    if(v) genSel139.add(e.id); else genSel139.delete(e.id);
+  });
+  renderM139Entries();
+}
+async function batchGen139(){
+  const cur=m139Stack[m139Stack.length-1];
+  if(!cur){ alert('请先进入一个目录'); return; }
+  const files=m139Items.filter(e=>!e.is_dir && genSel139.has(e.id));
+  if(!files.length){ alert('请先勾选要生成 CAS 的文件'); return; }
+  let up=$('upback139').checked, ow=true;
+  const withCas=files.filter(e=>m139Items.some(x=>!x.is_dir && x.name===e.name+'.cas'));
+  if(up && withCas.length){
+    ow=confirm('所选 '+files.length+' 个文件中有 '+withCas.length+' 个已有同名 .cas。\n确定=覆盖保存;取消=这 '+withCas.length+' 个只生成、不保存至同目录');
+  }
+  let n=0;
+  for(const e of files){
+    const keep = up && (ow || !withCas.includes(e));
+    const d=await api('/api/m139/gen',{file_id:e.id, name:e.name, size:e.size,
+      parent:cur.id, upload_back:keep, overwrite:keep && ow,
+      path:m139Stack.map(c=>c.name).join('/')+'/'+e.name});
+    if(d.ok) n++;
+  }
+  genSel139.clear(); renderM139Entries();
+  alert('已开始批量生成 '+n+' 个任务,进度见「任务」区');
+  loadJobs();
 }
 function updateHome139Label(){
   const dirs=SETTINGS.mobile_dirs||[];
@@ -2187,7 +2225,7 @@ function fillHome139(){
   picked139Path=nm;
   $('target189').value='移动云盘:'+nm;
 }
-let genRoot=null, curEntries=[];
+let genRoot=null, curEntries=[], genSel=new Set();
 function renderGenCrumbs(){
   const el=$('curpath');
   if(genRoot===null){ el.innerHTML='<span class="crumb">天翼挂载目录</span>'; return; }
@@ -2201,8 +2239,8 @@ function renderGenCrumbs(){
   for(let k=baseParts.length;k<allParts.length;k++){ acc+='/'+allParts[k]; h+=' <span class="mut">›</span> <span class="crumb" onclick="genGoPath(\''+esc(acc)+'\')">'+esc(allParts[k])+'</span>'; }
   el.innerHTML=h;
 }
-function genToRoots(){ genRoot=null; curPath=''; $('genfilter').value=''; loadList(); }
-function genGoPath(p){ curPath=p; $('genfilter').value=''; loadList(); }
+function genToRoots(){ genRoot=null; curPath=''; genSel.clear(); $('genfilter').value=''; loadList(); }
+function genGoPath(p){ curPath=p; genSel.clear(); $('genfilter').value=''; loadList(); }
 async function loadList(){
   const roots=tianyiRoots();
   if(genRoot===null){
@@ -2226,15 +2264,17 @@ function renderGenEntries(){
   $('entries').innerHTML = vis.length? vis.map(e=>{
     const p = (curPath==='/'?'':curPath)+'/'+e.name;
     if(e.is_dir) return '<div class="row dirrow" onclick="enterDir(\''+esc(p)+'\')"><span>📁</span><span class="grow">'+esc(e.name)+'</span></div>';
-    return '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span>'+(e.name.toLowerCase().endsWith('.cas')? '<span class=mut>CAS 文件</span>' : '<button class="small green" onclick="genCas(\''+esc(p)+'\','+e.size+')">生成 CAS</button>')+'</div>';
+    if(e.name.toLowerCase().endsWith('.cas')) return '<div class=row><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span><span class=mut>CAS 文件</span></div>';
+    return '<div class=row><input type="checkbox" style="width:auto" onchange="genChkChange(this,\''+esc(p)+'\')"'+(genSel.has(p)?' checked':'')+'><span class=grow>📄 '+esc(e.name)+'<br><span class=mut>'+e.size+' 字节</span></span><button class="small green" onclick="genCas(\''+esc(p)+'\','+e.size+')">生成 CAS</button></div>';
   }).join('') : '<div class=mut>'+(q?'没有匹配的文件或文件夹':'当前目录为空')+'</div>';
+  updateGenBatchBtn();
 }
-function genEnterRoot(i){ genRoot=tianyiRoots()[i]; curPath=genRoot; $('genfilter').value=''; loadList(); }
-function enterDir(p){ curPath=p; $('genfilter').value=''; loadList(); }
+function genEnterRoot(i){ genRoot=tianyiRoots()[i]; curPath=genRoot; genSel.clear(); $('genfilter').value=''; loadList(); }
+function enterDir(p){ curPath=p; genSel.clear(); $('genfilter').value=''; loadList(); }
 function goUp(){
   if(genRoot===null) return;
   if(curPath===genRoot){ if(tianyiRoots().length>1) genToRoots(); return; }
-  if(curPath!=='/'){ curPath=curPath.split('/').slice(0,-1).join('/')||'/'; $('genfilter').value=''; loadList(); }
+  if(curPath!=='/'){ genSel.clear(); curPath=curPath.split('/').slice(0,-1).join('/')||'/'; $('genfilter').value=''; loadList(); }
 }
 async function genMkdir(cloud){
   let name = prompt('新目录名');
@@ -2261,6 +2301,36 @@ async function genCas(p,size){
   }
   const d = await api('/api/gen',{path:p,size:size,upload_back:up});
   alert(d.ok? '已开始生成,进度见「任务」区' : d.msg);
+  loadJobs();
+}
+function genChkChange(cb,p){ if(cb.checked) genSel.add(p); else genSel.delete(p); updateGenBatchBtn(); }
+function updateGenBatchBtn(){ const b=$('genbatchbtn'); if(b) b.textContent='批量生成 CAS'+(genSel.size? ' ('+genSel.size+')' : ''); }
+function genCheckAll(v){
+  const q=(($('genfilter').value)||'').trim().toLowerCase();
+  curEntries.forEach(e=>{
+    if(e.is_dir || e.name.toLowerCase().endsWith('.cas')) return;
+    if(q && !e.name.toLowerCase().includes(q)) return;
+    const p=(curPath==='/'?'':curPath)+'/'+e.name;
+    if(v) genSel.add(p); else genSel.delete(p);
+  });
+  renderGenEntries();
+}
+async function batchGenOl(){
+  const files=curEntries.filter(e=>!e.is_dir && genSel.has((curPath==='/'?'':curPath)+'/'+e.name));
+  if(!files.length){ alert('请先勾选要生成 CAS 的文件'); return; }
+  let up=$('upback').checked, ow=true;
+  const withCas=files.filter(e=>curEntries.some(x=>!x.is_dir && x.name===e.name+'.cas'));
+  if(up && withCas.length){
+    ow=confirm('所选 '+files.length+' 个文件中有 '+withCas.length+' 个已有同名 .cas。\n确定=覆盖保存;取消=这 '+withCas.length+' 个只生成、不保存至同目录');
+  }
+  let n=0;
+  for(const e of files){
+    const p=(curPath==='/'?'':curPath)+'/'+e.name;
+    const d=await api('/api/gen',{path:p, size:e.size, upload_back: up && (ow || !withCas.includes(e))});
+    if(d.ok) n++;
+  }
+  genSel.clear(); renderGenEntries();
+  alert('已开始批量生成 '+n+' 个任务,进度见「任务」区');
   loadJobs();
 }
 const genResults={};
