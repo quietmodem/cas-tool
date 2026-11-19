@@ -1058,6 +1058,11 @@ def main():
     check("填入挂载目录按钮已移除",
           "填入天翼挂载目录" not in html and "填入移动云盘挂载目录" not in html
           and "fillHome" not in html, "")
+    check("目标目录提示词已更新(v2.15.0)",
+          "天翼按钮用天翼挂载目录" not in html
+          and "目标目录(不填:天翼用设置里的挂载目录,移动用默认目录)" in html, "")
+    check("选目录按 CAS 类型拦截错云标签(v2.15.0)",
+          "if(w && pickerTarget==='target189')" in html, "")
 
     # tt) 记住上次目录(v2.14.0):/api/lastdir 写入,设置接口透出,分云互不覆盖
     st, d, _ = req("POST", base + "/api/lastdir",

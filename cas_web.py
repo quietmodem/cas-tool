@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.14.0"
+VERSION = "2.15.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1485,7 +1485,7 @@ button:disabled{opacity:.35}
 <div class="row"><span><button onclick="inspectCas()">解析</button></span><button class="grey" onclick="clearRestore()">清空</button></div>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
-<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼挂载目录,移动按钮用移动挂载目录)" oninput="$('parent139').value='';picked139Path=''">
+<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼用设置里的挂载目录,移动用默认目录)" oninput="$('parent139').value='';picked139Path=''">
 <button class="small grey" onclick="togglePicker('target189')">📁 选目录</button></div>
 <input id="parent139" type="hidden" value="">
 <div class="mut" id="home139label"></div>
@@ -2000,7 +2000,11 @@ function togglePicker(targetId){
   p.style.display=show?'flex':'none';
 }
 function showPickerCloud(c){
-  const w=casWarnFor(c);
+  let w=casWarnFor(c);
+  if(w && pickerTarget==='target189'){
+    const other=c==='139'? '189':'139';
+    if(!casWarnFor(other)){ alert('⚠ '+w); c=other; w=''; }
+  }
   const el=$(c==='139'? 'warn139':'warn189');
   if(el){ el.textContent = w? '⚠ '+w : ''; el.style.display = w? 'block' : 'none'; }
   pickerCloud=c;
