@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.12.0"
+VERSION = "2.13.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1029,6 +1029,21 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/inspect":
                 cas_bytes = base64.b64decode(body.get("cas_b64", ""))
                 return self.ok(cas_summary(cas_bytes))
+            if path == "/api/renamecas":
+                new_name = str(body.get("name") or "").strip()
+                if not new_name:
+                    return self.fail("新文件名不能为空")
+                if "/" in new_name or "\\" in new_name:
+                    return self.fail("文件名不能包含 / 或 \\")
+                if len(new_name) > 200:
+                    return self.fail("文件名过长(上限 200 字符)")
+                try:
+                    cas_bytes = base64.b64decode(body.get("cas_b64", ""))
+                    renamed = ct.rename_cas_bytes(cas_bytes, new_name)
+                except Exception as e:  # noqa: BLE001
+                    return self.fail("重命名失败: %s" % e)
+                return self.ok({"cas_b64": base64.b64encode(renamed).decode("ascii"),
+                                "name": new_name})
             if path == "/api/scan":
                 return self.api_scan(body)
             if path == "/api/settings":
@@ -1627,11 +1642,34 @@ function renderBatch(){
   const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto" checked onchange="batchAll(this.checked)"> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</span></div>' : '';
   $('inspect').innerHTML = head + batchItems.map((it,i)=>
     it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
+      ' <button class="small grey" onclick="renameStart('+i+')">重命名</button>'+
+      (it.origName && it.origName!==it.info.name? '<br><span class=kv>原名: '+esc(it.origName)+'</span>':'')+
+      '<div id="rn'+i+'" style="display:none;margin:4px 0"><input id="rnin'+i+'" style="width:70%"> <button class="small green" onclick="renameSave('+i+')">保存</button> <button class="small grey" onclick="renderBatch()">取消</button></div>'+
       (it.src? '<br><span class=kv>来源: '+esc(it.src)+'</span>':'')+
       '<br><span class=kv>md5: '+esc(it.info.md5||'(空)')+' · sliceMd5: '+esc(it.info.sliceMd5||'(空)')+' · sha256: '+esc(it.info.sha256||'(空)')+'</span>'
       +'</div>'
            : '<div>📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
   ).join('');
+}
+function renameStart(i){
+  const ed=$('rn'+i); if(!ed) return;
+  ed.style.display='block';
+  const inp=$('rnin'+i); inp.value=batchItems[i].info.name; inp.focus();
+}
+async function renameSave(i){
+  const it=batchItems[i];
+  const v=$('rnin'+i).value.trim();
+  if(!v){ alert('新文件名不能为空'); return; }
+  if(v===it.info.name){ renderBatch(); return; }
+  const d=await api('/api/renamecas',{cas_b64:it.b64, name:v});
+  if(!d.ok){ alert(d.msg); return; }
+  if(!it.origName) it.origName=it.info.name;
+  it.b64=d.data.cas_b64; it.info.name=d.data.name;
+  const states=Array.from(document.querySelectorAll('.itchk')).map(c=>c.checked);
+  renderBatch();
+  document.querySelectorAll('.itchk').forEach((c,j)=>{ if(states[j]!==undefined) c.checked=states[j]; });
+  syncBatchAll();
+  setSt(i,'已重命名为《'+v+'》,还原与保存的 CAS 都会用新名','good');
 }
 let scanItems=[], scanSrc='ol', scan139=null;
 async function scanCas(){

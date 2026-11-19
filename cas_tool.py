@@ -84,6 +84,18 @@ def encode_cas(obj: dict) -> bytes:
     return base64.b64encode(text.encode("utf-8"))
 
 
+def rename_cas_bytes(raw: bytes, new_name: str) -> bytes:
+    """只替换 .cas 里的 name 字段,其余字段与顺序原样保留,返回新的 .cas 内容。
+
+    秒传判重只看哈希与大小,不看文件名;改名后还原出的文件、以及随同
+    保存的 .cas,都会使用新文件名。
+    """
+    obj = decode_cas_bytes(raw)
+    obj["name"] = new_name
+    text = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    return base64.b64encode(text.encode("utf-8"))
+
+
 def load_cas(path: str) -> dict:
     with open(path, "rb") as f:
         return decode_cas_bytes(f.read())

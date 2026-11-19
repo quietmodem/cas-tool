@@ -1020,6 +1020,39 @@ def main():
     check("批量删除 CAS 前端齐备", all(x in html for x in
           ["deleteJobCas", "批量删除 CAS", "/api/jobs/delete-cas"]))
 
+    # rr) 还原前重命名(v2.13.0):只改 name,哈希不变;两路还原都用新名
+    orig_obj = ct.decode_cas_bytes(sample_bytes)
+    ren_obj = ct.decode_cas_bytes(ct.rename_cas_bytes(sample_bytes, "新片名.mkv"))
+    check("rename_cas_bytes 改名且哈希不变",
+          ren_obj["name"] == "新片名.mkv" and ren_obj["sha256"] == orig_obj["sha256"]
+          and ren_obj["size"] == orig_obj["size"], ren_obj)
+    st, d, _ = req("POST", base + "/api/renamecas",
+                   {"cas_b64": sample_b64, "name": "167 4K 改名版.mp4"})
+    check("renamecas 接口改名", d["ok"] and d["data"]["name"] == "167 4K 改名版.mp4", d)
+    ren_b64 = d["data"]["cas_b64"] if d["ok"] else sample_b64
+    st, d, _ = req("POST", base + "/api/renamecas",
+                   {"cas_b64": sample_b64, "name": "a/b.mp4"})
+    check("renamecas 拒绝带斜杠的名字", not d["ok"], d)
+    st, d, _ = req("POST", base + "/api/restore139", {"cas_b64": ren_b64, "parent": "/"})
+    check("改名后 restore139 用新名创建",
+          d["ok"] and captured["create139"][-1][1]["name"] == "167 4K 改名版.mp4", d)
+    ty_bytes = ct.encode_cas({"name": "旧名.mkv", "size": 123456,
+                              "md5": "A" * 32, "sliceMd5": "B" * 32, "sha256": "",
+                              "recover_pass": "", "create_time": "1700000000"})
+    st, d, _ = req("POST", base + "/api/renamecas",
+                   {"cas_b64": base64.b64encode(ty_bytes).decode(), "name": "新名.mkv"})
+    st, d2, _ = req("POST", base + "/api/restoreol",
+                    {"cas_b64": d["data"]["cas_b64"], "cas_name": "新名.mkv.cas",
+                     "target": "/天翼云盘"})
+    rapid = [b for k, b in captured["seed"] if k == "rapid_upload"][-1]
+    seed_obj = ct.decode_cas_bytes(base64.b64decode(rapid["seed_data"]))
+    check("改名后 restoreol 种子载荷为新名",
+          d2["ok"] and seed_obj.get("name") == "新名.mkv" and seed_obj.get("md5") == "A" * 32, d2)
+    captured["seed"].clear()  # 不影响 g) 对种子调用顺序的断言
+    html = cw2.INDEX_HTML
+    check("前端含重命名入口",
+          all(x in html for x in ["renameStart", "renameSave", "/api/renamecas", "重命名"]), "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),
