@@ -1092,6 +1092,10 @@ def main():
           all(x in html for x in ["isMixed", "applyMixSelection", "全选天翼", "全选移动",
                                   "不能同时还原"]), "")
 
+    # ww) 移动选目录:已选目录按完整路径名重建层级栈(v2.16.1,修上级/面包屑失效)
+    html = cw2.INDEX_HTML
+    check("移动目录层级栈重建齐备", "seed139Stack" in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),

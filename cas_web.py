@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.16.0"
+VERSION = "2.16.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1985,6 +1985,35 @@ function pickerRoots139(){
     roots.push({id:SETTINGS.mobile_home_id, name:SETTINGS.mobile_home_name||'主目录'});
   return roots;
 }
+async function seed139Stack(pid, fullName){
+  // 已选目录只存了叶子 id 与完整路径名,上级目录的 id 无从得知;
+  // 从命中的已配置根目录起按路径段逐层列目录,重建完整的层级栈,上级/面包屑才能用。
+  const single=[{id:pid, name:fullName}];
+  const roots=pickerRoots139();
+  if(roots.some(r=>r.id===pid)) return single;
+  let root=null, rest=[];
+  for(const r of roots){
+    if(fullName===r.name) return single;
+    if(r.name && fullName.startsWith(r.name+'/')){ root=r; rest=fullName.slice(r.name.length+1).split('/').filter(Boolean); break; }
+  }
+  if(!root){
+    const segs=String(fullName||'').split('/').filter(Boolean);
+    if(segs.length<2) return single;
+    root=roots.find(r=>r.name===segs[0]);
+    if(!root) return single;
+    rest=segs.slice(1);
+  }
+  const stack=[{id:root.id, name:root.name}];
+  for(const seg of rest){
+    const cur=stack[stack.length-1];
+    const d=await api('/api/m139/list',{parent:cur.id});
+    if(!d.ok) return single;
+    const child=(d.data.items||[]).find(e=>e.is_dir && e.name===seg);
+    if(!child) return single;
+    stack.push({id:child.id, name:child.name});
+  }
+  return stack[stack.length-1].id===pid? stack : single;
+}
 function togglePicker(targetId){
   if(targetId) pickerTarget=targetId;
   const p=$('picker'); const show=p.style.display==='none';
@@ -2029,6 +2058,10 @@ function togglePicker(targetId){
     }
     $('ph189').style.display = pickerScope? 'none':'';
     showPickerCloud(pickerCloud);
+    if(pickerCloud==='139' && p139Stack.length===1 && p139Stack[0].name.indexOf('/')>=0){
+      const pid0=p139Stack[0].id, nm0=p139Stack[0].name;
+      seed139Stack(pid0, nm0).then(st=>{ if(st.length>1 && $('picker').style.display!=='none' && pickerCloud==='139'){ p139Stack=st; load139Pane(); } });
+    }
   }
   p.style.display=show?'flex':'none';
 }
