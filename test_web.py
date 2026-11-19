@@ -1096,6 +1096,11 @@ def main():
     html = cw2.INDEX_HTML
     check("移动目录层级栈重建齐备", "seed139Stack" in html, "")
 
+    # xx) 类型警告只限还原选目录,扫描/设置选目录不受还原区 CAS 影响(v2.16.2)
+    html = cw2.INDEX_HTML
+    check("类型警告限定还原上下文",
+          "pickerTarget==='target189'? casWarnFor(c)" in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),

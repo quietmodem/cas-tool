@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.16.1"
+VERSION = "2.16.2"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -2066,7 +2066,7 @@ function togglePicker(targetId){
   p.style.display=show?'flex':'none';
 }
 function showPickerCloud(c){
-  let w=casWarnFor(c);
+  let w=pickerTarget==='target189'? casWarnFor(c) : '';
   if(w && pickerTarget==='target189'){
     const other=c==='139'? '189':'139';
     if(!casWarnFor(other)){ alert('⚠ '+w); c=other; w=''; }
