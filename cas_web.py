@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.13.0"
+VERSION = "2.13.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1466,8 +1466,6 @@ button:disabled{opacity:.35}
 <div id="restorebox" style="display:none">
 <div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼按钮用天翼挂载目录,移动按钮用移动挂载目录)" oninput="$('parent139').value='';picked139Path=''">
 <button class="small grey" onclick="togglePicker('target189')">📁 选目录</button></div>
-<div class="row"><button class="small grey" onclick="fillHome('189')">填入天翼挂载目录</button>
-<button class="small grey" onclick="fillHome139()">填入移动云盘挂载目录</button></div>
 <input id="parent139" type="hidden" value="">
 <div class="mut" id="home139label"></div>
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,CAS文件保存至同目录</label>
@@ -1898,11 +1896,6 @@ function casWarnFor(cloud){
   if(cloud==='189' && !s.has('189') && !s.has('both')) return '所选 cas 为移动版,仅可还原到移动云盘';
   return '';
 }
-function fillHome(which){
-  const w = casWarnFor('189'); if(w){ alert('⚠ '+w); return; }
-  const v = SETTINGS.tianyi_home;
-  if(v){ $('target189').value=v; $('parent139').value=''; picked139Path=''; } else { alert('未设置挂载目录,请先在「设置」页配置'); }
-}
 let pickerCloud='189', p139Stack=[], p139Items=[], picked139Path='';
 function tianyiRoots(){
   const roots=[];
@@ -2331,16 +2324,6 @@ function updateHome139Label(){
   const t = dirs.length? '移动默认目录:'+(dirs[0].name||dirs[0].id)
     : (SETTINGS.mobile_home_id? '移动默认目录:'+(SETTINGS.mobile_home_name||SETTINGS.mobile_home_id) : '移动默认目录:未配置(设置页「移动云盘目录」)');
   const el=$('home139label'); if(el) el.textContent=t;
-}
-function fillHome139(){
-  const w = casWarnFor('139'); if(w){ alert('⚠ '+w); return; }
-  const dirs=SETTINGS.mobile_dirs||[];
-  const id=(dirs[0]&&dirs[0].id)||SETTINGS.mobile_home_id||'';
-  if(!id){ alert('请先在「设置」页配置移动云盘目录'); return; }
-  $('parent139').value=id;
-  const nm=((dirs[0]&&dirs[0].name)||SETTINGS.mobile_home_name||id);
-  picked139Path=nm;
-  $('target189').value='移动云盘:'+nm;
 }
 let genRoot=null, curEntries=[], genSel=new Set();
 function renderGenCrumbs(){

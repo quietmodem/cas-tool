@@ -1053,6 +1053,12 @@ def main():
     check("前端含重命名入口",
           all(x in html for x in ["renameStart", "renameSave", "/api/renamecas", "重命名"]), "")
 
+    # ss) 还原页移除「填入挂载目录」两个快捷按钮(v2.13.1,选目录已覆盖)
+    html = cw2.INDEX_HTML
+    check("填入挂载目录按钮已移除",
+          "填入天翼挂载目录" not in html and "填入移动云盘挂载目录" not in html
+          and "fillHome" not in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),
