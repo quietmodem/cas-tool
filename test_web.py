@@ -1059,6 +1059,24 @@ def main():
           "填入天翼挂载目录" not in html and "填入移动云盘挂载目录" not in html
           and "fillHome" not in html, "")
 
+    # tt) 记住上次目录(v2.14.0):/api/lastdir 写入,设置接口透出,分云互不覆盖
+    st, d, _ = req("POST", base + "/api/lastdir",
+                   {"cloud": "189", "target189": "/TV/上次天翼目录"})
+    check("lastdir 写天翼", d["ok"] and d["data"]["last_target189"] == "/TV/上次天翼目录", d)
+    st, d, _ = req("POST", base + "/api/lastdir",
+                   {"cloud": "139", "parent139": "PID9", "parent139_name": "中转"})
+    check("lastdir 写移动且不覆盖天翼",
+          d["ok"] and d["data"]["last_parent139"] == "PID9"
+          and d["data"]["last_cloud"] == "139"
+          and d["data"]["last_target189"] == "/TV/上次天翼目录", d)
+    st, d, _ = req("GET", base + "/api/settings", None)
+    check("设置接口透出上次目录",
+          d["ok"] and d["data"]["last_parent139_name"] == "中转"
+          and d["data"]["last_target189"] == "/TV/上次天翼目录", d)
+    html = cw2.INDEX_HTML
+    check("前端含记忆目录逻辑",
+          all(x in html for x in ["rememberLastDir", "applyLastDir", "/api/lastdir"]), "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),

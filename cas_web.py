@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.13.1"
+VERSION = "2.14.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -645,7 +645,9 @@ SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
                  "cas139_user", "cas139_pass", "cas139_mail_cookies",
                  "cas139_sms_code", "cas139_udid",
                  "mobile_home_id", "mobile_home_name", "tianyi_access",
-                 "tianyi_session_key")
+                 "tianyi_session_key",
+                 "last_target189", "last_parent139", "last_parent139_name",
+                 "last_cloud")
 PATH_KEYS = ("tianyi_paths", "mobile_paths")
 
 
@@ -857,6 +859,10 @@ def public_settings(s=None):
                 for d in (s.get("mobile_dirs") or [])),
             "mobile_home_id": s["mobile_home_id"],
             "mobile_home_name": s["mobile_home_name"],
+            "last_target189": s.get("last_target189") or "",
+            "last_parent139": s.get("last_parent139") or "",
+            "last_parent139_name": s.get("last_parent139_name") or "",
+            "last_cloud": s.get("last_cloud") or "",
             "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD),
             "tianyi_session_key_set": bool(s["tianyi_session_key"])}
 
@@ -1044,6 +1050,21 @@ class Handler(BaseHTTPRequestHandler):
                     return self.fail("重命名失败: %s" % e)
                 return self.ok({"cas_b64": base64.b64encode(renamed).decode("ascii"),
                                 "name": new_name})
+            if path == "/api/lastdir":
+                cur = load_settings()
+                if "target189" in body:
+                    cur["last_target189"] = str(body.get("target189") or "").strip()
+                if "parent139" in body:
+                    cur["last_parent139"] = str(body.get("parent139") or "").strip()
+                    cur["last_parent139_name"] = str(
+                        body.get("parent139_name") or "").strip()
+                if body.get("cloud") in ("189", "139"):
+                    cur["last_cloud"] = body["cloud"]
+                store_settings(cur)
+                return self.ok({"last_target189": cur["last_target189"],
+                                "last_parent139": cur["last_parent139"],
+                                "last_parent139_name": cur["last_parent139_name"],
+                                "last_cloud": cur["last_cloud"]})
             if path == "/api/scan":
                 return self.api_scan(body)
             if path == "/api/settings":
@@ -1841,10 +1862,30 @@ async function relogin139(){
   $('reloginmsg').innerHTML = d.ok? '<span class=good>'+esc(d.data.msg)+'</span>' : '<span class=err>'+esc(d.msg)+'</span>';
   loadSettings(); status();
 }
+let lastDirApplied=false;
+function applyLastDir(){
+  if($('target189').value) return;
+  if(SETTINGS.last_cloud==='139' && SETTINGS.last_parent139){
+    $('parent139').value=SETTINGS.last_parent139;
+    picked139Path=SETTINGS.last_parent139_name||'';
+    $('target189').value='移动云盘:'+(SETTINGS.last_parent139_name||SETTINGS.last_parent139);
+  } else if(SETTINGS.last_target189){
+    $('target189').value=SETTINGS.last_target189;
+  }
+}
+function rememberLastDir(cloud, value, name){
+  if(!value) return;
+  const body={cloud:cloud};
+  if(cloud==='139'){ body.parent139=value; body.parent139_name=name||''; SETTINGS.last_parent139=value; SETTINGS.last_parent139_name=name||''; }
+  else { body.target189=value; SETTINGS.last_target189=value; }
+  SETTINGS.last_cloud=cloud;
+  api('/api/lastdir', body);
+}
 async function loadSettings(){
   const d = await api('/api/settings');
   if(!d.ok) return;
   SETTINGS=d.data;
+  if(!lastDirApplied){ lastDirApplied=true; applyLastDir(); }
   $('home189').value=SETTINGS.tianyi_home||''; $('cfgaccess').value=SETTINGS.tianyi_access||'openlist';
   updateHome139Label();
   $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
@@ -2033,6 +2074,7 @@ function pickerPick(p){
     if(lines.indexOf(p)<0) lines.push(p);
     ta.value=lines.join('\n');
   } else { $(pickerTarget).value=p; if(pickerTarget==='scanpath'){ scanSrc='ol'; scan139=null; } }
+  if(pickerTarget==='target189') rememberLastDir('189', p);
   $('picker').style.display='none';
 }
 function p139CurName(){ return p139Stack.map(c=>c.name).join('/'); }
@@ -2108,7 +2150,7 @@ function pickerUse(){
     if(!p139Stack.length){ alert('先进入一个目录'); return; }
     const cur=p139Stack[p139Stack.length-1];
     const nm=p139CurName();
-    if(pickerTarget==='target189'){ $('parent139').value=cur.id; picked139Path=nm; $('target189').value='移动云盘:'+nm; }
+    if(pickerTarget==='target189'){ $('parent139').value=cur.id; picked139Path=nm; $('target189').value='移动云盘:'+nm; rememberLastDir('139', cur.id, nm); }
     else if(pickerTarget==='scanpath'){ scan139={id:cur.id,name:nm}; scanSrc='139'; $('scanpath').value='移动云盘:'+nm; }
     $('picker').style.display='none';
     return;
@@ -2191,6 +2233,12 @@ async function restoreCore(to, items, setStatus){
       const shown = warns.slice(0,5).join('\n') + (warns.length>5? '\n…等共 '+warns.length+' 条' : '');
       if(!confirm('⚠ 目录可能选错了:\n\n'+shown+'\n\n仍要继续还原吗？')) return null;
     }
+  }
+  if(to==='mobile'){
+    const pid=$('parent139').value||directHome139;
+    if(pid){ const nm=picked139Path || ((dirs139.find(d=>d.id===pid)||{}).name) || ''; rememberLastDir('139', pid, nm); }
+  } else {
+    rememberLastDir('189', target);
   }
   let okN=0, badN=0;
   for(let i=0;i<items.length;i++){
