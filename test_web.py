@@ -1082,6 +1082,16 @@ def main():
     check("前端含记忆目录逻辑",
           all(x in html for x in ["rememberLastDir", "applyLastDir", "/api/lastdir"]), "")
 
+    # vv) 目录标签删除/地址栏按类型同步/混合 CAS 分组选择(v2.16.0)
+    html = cw2.INDEX_HTML
+    check("移动默认目录标签已删除",
+          "home139label" not in html and "updateHome139Label" not in html, "")
+    check("地址栏按类型同步齐备",
+          all(x in html for x in ["syncTargetToKinds", "touched189", "touched139"]), "")
+    check("混合 CAS 分组选择齐备",
+          all(x in html for x in ["isMixed", "applyMixSelection", "全选天翼", "全选移动",
+                                  "不能同时还原"]), "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),

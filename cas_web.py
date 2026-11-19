@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.15.0"
+VERSION = "2.16.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1485,10 +1485,9 @@ button:disabled{opacity:.35}
 <div class="row"><span><button onclick="inspectCas()">解析</button></span><button class="grey" onclick="clearRestore()">清空</button></div>
 <div id="inspect" class="msg"></div>
 <div id="restorebox" style="display:none">
-<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼用设置里的挂载目录,移动用默认目录)" oninput="$('parent139').value='';picked139Path=''">
+<div class="row"><input id="target189" class="grow" placeholder="目标目录(不填:天翼用设置里的挂载目录,移动用默认目录)" oninput="$('parent139').value='';picked139Path='';touched189=true">
 <button class="small grey" onclick="togglePicker('target189')">📁 选目录</button></div>
 <input id="parent139" type="hidden" value="">
-<div class="mut" id="home139label"></div>
 <label class="mut"><input type="checkbox" id="sidecar" style="width:auto" checked> 还原成功后,CAS文件保存至同目录</label>
 <button class="green" id="btnTy" onclick="doRestore('tianyi')">还原到天翼云盘</button>
 <button class="green" id="btnMb" onclick="doRestore('mobile')">还原到移动云盘</button>
@@ -1618,6 +1617,18 @@ async function status(){
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();
   r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file);});}
 let batchItems=[], dropFiles=null;
+let touched189=false, touched139=false, mixSide='ty';
+function isMixed(){
+  let a=false,b=false;
+  for(const it of batchItems){ if(!it.info) continue; const c=itemCloud(it); if(c==='189') a=true; else if(c==='139') b=true; }
+  return a&&b;
+}
+function applyMixSelection(side){
+  mixSide=side;
+  batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); if(!c||!it.info) return; const cl=itemCloud(it);
+    c.checked = cl==='both'? true : (side==='ty'? cl==='189' : cl==='139'); });
+  syncBatchAll();
+}
 async function collectItems(){
   const items=[];
   const fl = dropFiles || $('casfile').files; dropFiles=null;
@@ -1643,11 +1654,13 @@ async function inspectCas(){
     const d = await api('/api/inspect',{cas_b64:it.b64});
     it.info = d.ok? d.data : null; it.err = d.ok? '' : d.msg;
   }
+  touched189=false; touched139=false; mixSide='ty';
   renderBatch(); refreshBtns();
+  if(isMixed()) applyMixSelection('ty'); else syncTargetToKinds();
   $('restorebox').style.display='block';
 }
 function clearRestore(){
-  batchItems=[]; dropFiles=null;
+  batchItems=[]; dropFiles=null; touched189=false; touched139=false; mixSide='ty';
   $('casfile').value='';
   $('castext').value='';
   $('inspect').innerHTML='';
@@ -1655,10 +1668,12 @@ function clearRestore(){
   $('restorebox').style.display='none';
   refreshBtns();
 }
-function batchAll(v){ document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); refreshBtns(); }
-function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); }
+function batchAll(v){ if(isMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); refreshBtns(); syncTargetToKinds(); }
+function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); syncTargetToKinds(); }
 function renderBatch(){
-  const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto" checked onchange="batchAll(this.checked)"> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</span></div>' : '';
+  const mixed = isMixed();
+  const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto" checked onchange="batchAll(this.checked)"'+(mixed?' disabled':'')+'> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</span>'
+    +(mixed? ' <button class="small grey" onclick="applyMixSelection(\'ty\')">全选天翼</button> <button class="small grey" onclick="applyMixSelection(\'mb\')">全选移动</button> <span class=mut>含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
   $('inspect').innerHTML = head + batchItems.map((it,i)=>
     it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
       ' <button class="small grey" onclick="renameStart('+i+')">重命名</button>'+
@@ -1743,6 +1758,7 @@ function pushScanToRestore(){
   renderBatch();
   $('restorebox').style.display='block';
   refreshBtns();
+  if(isMixed()) applyMixSelection('ty'); else syncTargetToKinds();
   $('scanrestoremsg').innerHTML='<span class=good>已推送 '+added+' 份到还原区</span>'
     +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'');
   switchTab('restore');
@@ -1873,6 +1889,24 @@ function applyLastDir(){
     $('target189').value=SETTINGS.last_target189;
   }
 }
+function syncTargetToKinds(){
+  const s=checkedKinds(); if(!s.size) return;
+  const canTy=s.has('189')||s.has('both'), canMb=s.has('139')||s.has('both');
+  if(canMb && !canTy){
+    if(touched139) return;
+    const dirs=SETTINGS.mobile_dirs||[];
+    const pid=SETTINGS.last_parent139 || (dirs[0]&&dirs[0].id) || SETTINGS.mobile_home_id || '';
+    if(!pid){ $('parent139').value=''; picked139Path=''; $('target189').value=''; return; }
+    let nm='';
+    if(pid===SETTINGS.last_parent139 && SETTINGS.last_parent139_name) nm=SETTINGS.last_parent139_name;
+    else { const d0=dirs.find(d=>d.id===pid); nm=d0? (d0.name||pid) : (SETTINGS.mobile_home_name||pid); }
+    $('parent139').value=pid; picked139Path=nm; $('target189').value='移动云盘:'+nm;
+  } else if(canTy && !canMb){
+    if(touched189) return;
+    $('parent139').value=''; picked139Path='';
+    $('target189').value=SETTINGS.last_target189||'';
+  }
+}
 function rememberLastDir(cloud, value, name){
   if(!value) return;
   const body={cloud:cloud};
@@ -1887,7 +1921,6 @@ async function loadSettings(){
   SETTINGS=d.data;
   if(!lastDirApplied){ lastDirApplied=true; applyLastDir(); }
   $('home189').value=SETTINGS.tianyi_home||''; $('cfgaccess').value=SETTINGS.tianyi_access||'openlist';
-  updateHome139Label();
   $('cfgurl').value=SETTINGS.openlist_url||''; $('cfgphone').value=SETTINGS.cas139_phone||'';
   $('paths189').value=(SETTINGS.tianyi_paths||[]).join('\n');
   $('dirs139').value=SETTINGS.mobile_dirs_text||'';
@@ -2078,7 +2111,7 @@ function pickerPick(p){
     if(lines.indexOf(p)<0) lines.push(p);
     ta.value=lines.join('\n');
   } else { $(pickerTarget).value=p; if(pickerTarget==='scanpath'){ scanSrc='ol'; scan139=null; } }
-  if(pickerTarget==='target189') rememberLastDir('189', p);
+  if(pickerTarget==='target189'){ touched189=true; rememberLastDir('189', p); }
   $('picker').style.display='none';
 }
 function p139CurName(){ return p139Stack.map(c=>c.name).join('/'); }
@@ -2154,7 +2187,7 @@ function pickerUse(){
     if(!p139Stack.length){ alert('先进入一个目录'); return; }
     const cur=p139Stack[p139Stack.length-1];
     const nm=p139CurName();
-    if(pickerTarget==='target189'){ $('parent139').value=cur.id; picked139Path=nm; $('target189').value='移动云盘:'+nm; rememberLastDir('139', cur.id, nm); }
+    if(pickerTarget==='target189'){ $('parent139').value=cur.id; picked139Path=nm; $('target189').value='移动云盘:'+nm; touched139=true; rememberLastDir('139', cur.id, nm); }
     else if(pickerTarget==='scanpath'){ scan139={id:cur.id,name:nm}; scanSrc='139'; $('scanpath').value='移动云盘:'+nm; }
     $('picker').style.display='none';
     return;
@@ -2187,6 +2220,13 @@ function applyBtns(ty, mb, s){
   if(mb) mb.disabled = !(s.has('139')||s.has('both'));
 }
 function refreshBtns(){
+  if(isMixed()){
+    let hasTy=false, hasMb=false;
+    batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); if(!it.info || !(c? c.checked : true)) return; const cl=itemCloud(it); if(cl==='189') hasTy=true; else if(cl==='139') hasMb=true; });
+    if($('btnTy')) $('btnTy').disabled=hasMb;
+    if($('btnMb')) $('btnMb').disabled=hasTy;
+    return;
+  }
   applyBtns($('btnTy'), $('btnMb'), kindsOf(batchItems, i=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); return c? c.checked : true; }));
 }
 function itemCloud(it){
@@ -2274,6 +2314,9 @@ async function restoreCore(to, items, setStatus){
 async function doRestore(to){
   if(!batchItems.length){ alert('先解析 cas'); return; }
   batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); it._skip = c? !c.checked : false; });
+  let gTy=false, gMb=false;
+  batchItems.forEach(it=>{ if(it._skip||!it.info) return; const cl=itemCloud(it); if(cl==='189') gTy=true; else if(cl==='139') gMb=true; });
+  if(gTy&&gMb){ alert('天翼版与移动版 CAS 不能同时还原,请用「全选天翼」或「全选移动」分开还原'); return; }
   const r = await restoreCore(to, batchItems, setSt);
   if(!r){ $('restoremsg').innerHTML='已取消还原'; return; }
   $('restoremsg').innerHTML='批量还原完成: 确认成功 '+r.okN+' · 未确认/失败 '+r.badN+'(目标目录: '+esc(r.target)+')';
@@ -2370,12 +2413,6 @@ async function batchGen139(){
   genSel139.clear(); renderM139Entries();
   alert('已开始批量生成 '+n+' 个任务,进度见「任务」区');
   loadJobs();
-}
-function updateHome139Label(){
-  const dirs=SETTINGS.mobile_dirs||[];
-  const t = dirs.length? '移动默认目录:'+(dirs[0].name||dirs[0].id)
-    : (SETTINGS.mobile_home_id? '移动默认目录:'+(SETTINGS.mobile_home_name||SETTINGS.mobile_home_id) : '移动默认目录:未配置(设置页「移动云盘目录」)');
-  const el=$('home139label'); if(el) el.textContent=t;
 }
 let genRoot=null, curEntries=[], genSel=new Set();
 function renderGenCrumbs(){
