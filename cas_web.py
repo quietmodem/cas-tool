@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.16.2"
+VERSION = "2.17.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -636,6 +636,190 @@ def unzip_cas(zip_bytes):
     return items
 
 
+# ---------------- Telegram 收件箱 ----------------
+# 用户在 Telegram 里把 .cas(或含 .cas 的 zip)发给机器人,文件只存入
+# 收件箱(data/inbox.json),不触发任何还原;之后由用户在网页处理。
+# 仅接收设置里白名单用户 ID 发来的文件。轮询线程只读设置,未配置时空转。
+
+TG_API = "https://api.telegram.org"
+INBOX_LOCK = threading.Lock()
+INBOX_MAX = 300
+
+
+def inbox_path():
+    return os.path.join(DATA_DIR, "inbox.json")
+
+
+def load_inbox():
+    try:
+        with open(inbox_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def store_inbox(items):
+    with open(inbox_path(), "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False)
+
+
+def inbox_add(fname, raw):
+    """把一份 CAS 原始字节存入收件箱。返回 (状态, 条目):
+    状态为 added / dup / bad。"""
+    try:
+        info = cas_summary(raw)
+    except Exception:  # noqa: BLE001
+        return "bad", None
+    digest = hashlib.sha256(raw).hexdigest()
+    with INBOX_LOCK:
+        items = load_inbox()
+        if any(it.get("digest") == digest for it in items):
+            return "dup", None
+        item = {"id": uuid.uuid4().hex[:12],
+                "name": fname or (info.get("name") or "file") + ".cas",
+                "b64": base64.b64encode(raw).decode("ascii"),
+                "info": info, "digest": digest,
+                "time": time.strftime("%Y-%m-%d %H:%M")}
+        items.insert(0, item)
+        store_inbox(items[:INBOX_MAX])
+        return "added", item
+
+
+def inbox_delete(ids):
+    wanted = set(ids or [])
+    with INBOX_LOCK:
+        items = load_inbox()
+        kept = [it for it in items if it.get("id") not in wanted]
+        store_inbox(kept)
+        return len(items) - len(kept)
+
+
+def tg_call(token, method, payload=None, timeout=40):
+    url = "%s/bot%s/%s" % (TG_API, token, method)
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def tg_send(token, chat_id, text):
+    try:
+        tg_call(token, "sendMessage", {"chat_id": chat_id, "text": text},
+                timeout=15)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def tg_download(token, file_id):
+    d = tg_call(token, "getFile", {"file_id": file_id}, timeout=15)
+    path = ((d.get("result") or {}).get("file_path") or "")
+    if not path:
+        raise ValueError("Telegram 未返回文件路径")
+    req = urllib.request.Request("%s/file/bot%s/%s" % (TG_API, token, path))
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+
+def tg_ingest(token, chat_id, doc):
+    """处理一份收到的文件:下载、拆 zip、逐份入收件箱,结果回复到 TG。"""
+    fname = str(doc.get("file_name") or "")
+    try:
+        raw = tg_download(token, doc.get("file_id") or "")
+    except Exception as e:  # noqa: BLE001
+        tg_send(token, chat_id, "收件箱:文件下载失败(%s)" % str(e)[:120])
+        return
+    cands = []
+    low = fname.lower()
+    if low.endswith(".zip"):
+        try:
+            cands = [(it["name"], base64.b64decode(it["cas_b64"]))
+                     for it in unzip_cas(raw)]
+        except Exception:  # noqa: BLE001
+            cands = []
+        if not cands:
+            tg_send(token, chat_id, "收件箱:压缩包里没找到 .cas 文件")
+            return
+    elif low.endswith(".cas"):
+        cands = [(fname, raw)]
+    else:
+        tg_send(token, chat_id, "收件箱:仅接收 .cas 文件或含 .cas 的 zip 压缩包")
+        return
+    added, dup, bad = [], 0, 0
+    for name, data in cands:
+        st, item = inbox_add(name, data)
+        if st == "added":
+            added.append(item)
+        elif st == "dup":
+            dup += 1
+        else:
+            bad += 1
+    lines = []
+    for it in added:
+        lines.append("已存入收件箱:%s(%s)" % (it["info"].get("name") or it["name"],
+                                              it["info"].get("kind") or ""))
+    if dup:
+        lines.append("%d 份已在收件箱中,跳过" % dup)
+    if bad:
+        lines.append("%d 份不是有效的 CAS 文件,未存入" % bad)
+    if lines:
+        tg_send(token, chat_id, "\n".join(lines))
+
+
+def tg_handle_update(token, allow, upd):
+    msg = upd.get("message") or {}
+    frm = msg.get("from") or {}
+    if str(frm.get("id") or "") != str(allow):
+        return
+    chat_id = (msg.get("chat") or {}).get("id")
+    doc = msg.get("document")
+    if doc:
+        tg_ingest(token, chat_id, doc)
+    elif msg.get("text"):
+        tg_send(token, chat_id,
+                "把 .cas 文件(或含 .cas 的 zip)发给我,即可存入 cas-tool 收件箱。")
+
+
+def tg_poll_once(token, allow, offset):
+    """拉取并处理一批更新,返回新的 offset。"""
+    resp = tg_call(token, "getUpdates",
+                   {"offset": offset, "timeout": 25,
+                    "allowed_updates": ["message"]}, timeout=35)
+    for upd in resp.get("result") or []:
+        offset = max(offset, int(upd.get("update_id") or 0) + 1)
+        try:
+            tg_handle_update(token, allow, upd)
+        except Exception:  # noqa: BLE001
+            pass
+    return offset
+
+
+def tg_poll_loop():
+    while True:
+        try:
+            s = load_settings()
+            token = (s.get("tg_bot_token") or "").strip()
+            allow = (s.get("tg_allow_id") or "").strip()
+            if not token or not allow:
+                time.sleep(10)
+                continue
+            try:
+                offset = int(s.get("tg_offset") or 0)
+            except (TypeError, ValueError):
+                offset = 0
+            new_offset = tg_poll_once(token, allow, offset)
+            if new_offset != offset:
+                cur = load_settings()
+                cur["tg_offset"] = str(new_offset)
+                store_settings(cur)
+        except Exception:  # noqa: BLE001
+            time.sleep(8)
+
+
 def settings_path():
     return os.path.join(DATA_DIR, "settings.json")
 
@@ -647,7 +831,7 @@ SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
                  "mobile_home_id", "mobile_home_name", "tianyi_access",
                  "tianyi_session_key",
                  "last_target189", "last_parent139", "last_parent139_name",
-                 "last_cloud")
+                 "last_cloud", "tg_bot_token", "tg_allow_id", "tg_offset")
 PATH_KEYS = ("tianyi_paths", "mobile_paths")
 
 
@@ -759,6 +943,13 @@ def update_settings(body):
         cur["tianyi_session_key"] = sk_in
     if body.get("clear_tianyi_session_key"):
         cur["tianyi_session_key"] = ""
+    tg_in = str(body.get("tg_bot_token") or "").strip()
+    if tg_in:
+        cur["tg_bot_token"] = tg_in
+    if body.get("clear_tg_bot_token"):
+        cur["tg_bot_token"] = ""
+    if "tg_allow_id" in body:
+        cur["tg_allow_id"] = str(body.get("tg_allow_id") or "").strip()
     if "cas139_user" in body:
         cur["cas139_user"] = str(body.get("cas139_user") or "").strip()
     if "tianyi_access" in body:
@@ -864,6 +1055,8 @@ def public_settings(s=None):
             "last_parent139_name": s.get("last_parent139_name") or "",
             "last_cloud": s.get("last_cloud") or "",
             "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD),
+            "tg_bot_token_set": bool(s.get("tg_bot_token")),
+            "tg_allow_id": s.get("tg_allow_id") or "",
             "tianyi_session_key_set": bool(s["tianyi_session_key"])}
 
 
@@ -998,6 +1191,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_status()
             if path == "/api/settings":
                 return self.ok(public_settings())
+            if path == "/api/inbox":
+                return self.ok(load_inbox())
             if path == "/api/list":
                 return self.api_list(qs)
             if path == "/api/jobs":
@@ -1065,6 +1260,8 @@ class Handler(BaseHTTPRequestHandler):
                                 "last_parent139": cur["last_parent139"],
                                 "last_parent139_name": cur["last_parent139_name"],
                                 "last_cloud": cur["last_cloud"]})
+            if path == "/api/inbox/delete":
+                return self.ok({"deleted": inbox_delete(body.get("ids") or [])})
             if path == "/api/scan":
                 return self.api_scan(body)
             if path == "/api/settings":
@@ -1450,6 +1647,7 @@ button:disabled{opacity:.35}
 <button id="tabbtn-restore" class="tabbtn on" onclick="switchTab('restore')">CAS 还原</button>
 <button id="tabbtn-gen" class="tabbtn" onclick="switchTab('gen')">CAS 生成</button>
 <button id="tabbtn-scan" class="tabbtn" onclick="switchTab('scan')">CAS 扫描</button>
+<button id="tabbtn-inbox" class="tabbtn" onclick="switchTab('inbox')">收件箱</button>
 <button id="tabbtn-settings" class="tabbtn" onclick="switchTab('settings')">设置</button>
 </div>
 
@@ -1538,6 +1736,20 @@ button:disabled{opacity:.35}
 </div>
 </div></div>
 
+<div id="tab-inbox" style="display:none">
+<div class="card"><h2>📥 收件箱</h2>
+<div class="mut">通过 Telegram 机器人发来的 CAS 文件存放在这里,与还原区互不影响;勾选后推送到还原区,再选目录还原。</div>
+<div id="inboxmsg" class="msg"></div>
+<div id="inboxlist"></div>
+<div id="inboxbtns" style="display:none">
+<div class="row"><button class="small grey" onclick="inboxCheckAll(true)">全选</button>
+<button class="small grey" onclick="inboxCheckAll(false)">全不选</button></div>
+<div class="row"><button class="green" onclick="pushInboxToRestore()">⬆ 推送到还原区</button>
+<button class="grey" onclick="downloadInboxZip()">⬇ 打包下载所选</button>
+<button class="grey" onclick="deleteInboxSel()">删除所选</button></div>
+</div>
+</div></div>
+
 <div id="tab-settings" style="display:none">
 <div class="card"><h2>☁️ 天翼云盘</h2>
 <div class="mut">密钥类留空 = 不修改,不回显明文。</div>
@@ -1584,6 +1796,16 @@ button:disabled{opacity:.35}
 <label class="mut">移动云盘目录(可多个,一行一个:名称 = 目录 ID;第一行 = 默认目录)</label>
 <textarea id="dirs139" rows="3" placeholder="中转 = 0123456789abcdef&#10;电影 = fedcba9876543210"></textarea>
 <div class="mut">目录 ID:在还原页「选目录 → 移动云盘」里进入文件夹点「把当前目录存到设置」即可;或看 yun.139.com F12 里 file/list 请求的 parentFileId。</div>
+</div>
+<div class="card"><h2>📥 Telegram 收件箱</h2>
+<div class="mut">在 Telegram 里把 .cas 文件(或含 .cas 的 zip)发给机器人,文件会存入「收件箱」选项卡,之后在网页里处理。此功能仅接收存入,不自动还原。</div>
+<label class="mut">Bot Token <span id="tgstate" class="kv"></span></label>
+<input id="cfgtg" type="password" placeholder="粘贴机器人 Token(留空 = 不修改)">
+<div class="mut">机器人由 @BotFather 创建;可与通知共用,也可单独新建。仅接收下方用户 ID 发来的文件,其余一概忽略。</div>
+<label class="mut"><input type="checkbox" id="cfgtgclear" style="width:auto"> 清除 Bot Token(停用收件箱接收)</label>
+<label class="mut">允许的用户 ID</label>
+<input id="cfgtgid" placeholder="自己的 Telegram 用户 ID(数字)">
+<div class="mut">获取:在 Telegram 里给 @userinfobot 发任意消息,它会回复你的用户 ID。</div>
 </div>
 <div class="card"><h2>🔒 页面与安全</h2>
 <label class="mut">页面访问口令 <span id="pwstate" class="kv"></span></label>
@@ -1860,10 +2082,57 @@ dz.addEventListener('drop',e=>{ const fs=e.dataTransfer.files; if(fs && fs.lengt
 ['dragover','drop'].forEach(ev=>window.addEventListener(ev,e=>e.preventDefault()));
 let pickerPath='/', pickerTarget='target189', pickerScope=null;
 function switchTab(name){
-  for(const n of ['restore','gen','scan','settings']){
+  for(const n of ['restore','gen','scan','inbox','settings']){
     $('tab-'+n).style.display = n===name? 'block':'none';
     $('tabbtn-'+n).classList.toggle('on', n===name);
   }
+  if(name==='inbox') loadInbox();
+}
+let inboxItems=[];
+async function loadInbox(){
+  const d=await api('/api/inbox');
+  inboxItems = d.ok? (d.data||[]) : [];
+  renderInbox();
+}
+function renderInbox(){
+  $('inboxbtns').style.display = inboxItems.length? 'block':'none';
+  $('inboxlist').innerHTML = inboxItems.length? inboxItems.map((it,i)=>
+    '<div><label><input type="checkbox" class="inboxchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span>'+
+    '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span></div>').join('')
+    : '<div class="mut" style="padding:8px 2px">收件箱为空。在 Telegram 里把 .cas 文件发给机器人即可存入(需先在设置里配置机器人)。</div>';
+}
+function inboxCheckAll(v){ document.querySelectorAll('.inboxchk').forEach(c=>{ c.checked=v; }); }
+function pickedInbox(){ const out=[]; inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(c && c.checked) out.push(it); }); return out; }
+function pushInboxToRestore(){
+  const picked=pickedInbox();
+  if(!picked.length){ alert('请先在收件箱中勾选 cas'); return; }
+  let added=0;
+  for(const it of picked){
+    if(batchItems.some(b=>b.b64===it.b64)) continue;
+    batchItems.push({name:it.name, b64:it.b64, src:'收件箱', info:it.info});
+    added++;
+  }
+  renderBatch();
+  $('restorebox').style.display='block';
+  refreshBtns();
+  if(isMixed()) applyMixSelection('ty'); else syncTargetToKinds();
+  $('inboxmsg').innerHTML='<span class=good>已推送 '+added+' 份到还原区</span>'
+    +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'');
+  switchTab('restore');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function downloadInboxZip(){
+  const sel=pickedInbox();
+  if(!sel.length){ alert('请先勾选要打包下载的 CAS'); return; }
+  saveBlob(makeZip(dedupeNames(sel.map(it=>({name:it.name, bytes:b64ToBytes(it.b64)})))), 'cas-inbox.zip');
+}
+async function deleteInboxSel(){
+  const picked=pickedInbox();
+  if(!picked.length){ alert('请先勾选要删除的 CAS'); return; }
+  if(!await askConfirm('删除收件箱中所选 '+picked.length+' 份 CAS?仅删除收件箱中的记录。')) return;
+  const d=await api('/api/inbox/delete',{ids:picked.map(x=>x.id)});
+  if(d.ok){ $('inboxmsg').innerHTML='<span class=good>已删除 '+d.data.deleted+' 份</span>'; loadInbox(); }
+  else $('inboxmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>';
 }
 let SETTINGS={tianyi_home:'',mobile_home:''};
 const MASK='••••••••';
@@ -1936,6 +2205,9 @@ async function loadSettings(){
   $('cookstate').textContent = SETTINGS.cas139_mail_cookies_set? '(已设置)' : '(未设置)';
   $('smsstate').textContent = SETTINGS.cas139_sms_code_set? '(已填,下次登录时用)' : '';
   $('cfgpw').value = SETTINGS.web_password_set? MASK : '';
+  $('cfgtg').value = SETTINGS.tg_bot_token_set? MASK : '';
+  $('tgstate').textContent = SETTINGS.tg_bot_token_set? '(已设置)' : '(未设置)';
+  $('cfgtgid').value=SETTINGS.tg_allow_id||'';
   $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置'+(SETTINGS.openlist_token_source? ' · 来自'+SETTINGS.openlist_token_source : '')+')' : '(未设置)';
   $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置'+(SETTINGS.cas139_auth_expiry? ' · 授权到期 '+SETTINGS.cas139_auth_expiry : '')+')' : '(未设置)';
   loadList();
@@ -1953,10 +2225,12 @@ async function saveSettings(){
     clear_openlist_token:$('cfgtokclear').checked, clear_cas139_auth:$('cfgauthclear').checked,
     cas139_user:$('cfguser').value.trim(), cas139_pass:secVal('cfgpass139'),
     cas139_mail_cookies:secVal('cfgcookies'), cas139_sms_code:secVal('cfgsms'),
+    tg_bot_token:secVal('cfgtg'), clear_tg_bot_token:$('cfgtgclear').checked,
+    tg_allow_id:$('cfgtgid').value.trim(),
     clear_cas139_pass:$('cfgpassclear').checked, clear_cas139_mail_cookies:$('cfgcookclear').checked};
   const d = await api('/api/settings', body);
   $('setmsg').innerHTML = d.ok? '<span class=good>已保存</span>' : '<span class=err>'+esc(d.msg)+'</span>';
-  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; $('cfgtokclear').checked=false; $('cfgsk189').value=''; $('cfgskclear').checked=false; $('cfgauthclear').checked=false; $('cfgpassclear').checked=false; $('cfgcookclear').checked=false; loadSettings(); status(); }
+  if(d.ok){ $('cfgtoken').value=''; $('cfgauth').value=''; $('cfgpw').value=''; $('cfgpwclear').checked=false; $('cfgtokclear').checked=false; $('cfgsk189').value=''; $('cfgskclear').checked=false; $('cfgauthclear').checked=false; $('cfgpassclear').checked=false; $('cfgcookclear').checked=false; $('cfgtg').value=''; $('cfgtgclear').checked=false; loadSettings(); status(); }
 }
 function checkedKinds(){
   const s=new Set();
@@ -2671,6 +2945,7 @@ setInterval(loadJobs, 2500);
 
 
 def main():
+    threading.Thread(target=tg_poll_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print("cas-web v%s 监听 :%d  数据目录 %s  口令保护:%s"
           % (VERSION, PORT, DATA_DIR, "开" if password_required() else "关"))

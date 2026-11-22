@@ -185,6 +185,43 @@ class Mock189(BaseHTTPRequestHandler):
         return self._json({"code": "FAIL"})
 
 
+MOCKTG = {"updates": [], "sent": []}
+
+
+class MockTG(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _json(self, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.startswith("/file/botTESTTOKEN/"):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(SCAN_CAS)))
+            self.end_headers()
+            self.wfile.write(SCAN_CAS)
+            return
+        return self._json({"ok": False})
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(n) or b"{}")
+        if self.path.endswith("/getUpdates"):
+            return self._json({"ok": True, "result": MOCKTG["updates"]})
+        if self.path.endswith("/getFile"):
+            return self._json({"ok": True, "result": {"file_path": "docs/a.cas"}})
+        if self.path.endswith("/sendMessage"):
+            MOCKTG["sent"].append(body)
+            return self._json({"ok": True, "result": {}})
+        return self._json({"ok": False})
+
+
 class Mock139(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -1100,6 +1137,44 @@ def main():
     html = cw2.INDEX_HTML
     check("类型警告限定还原上下文",
           "pickerTarget==='target189'? casWarnFor(c)" in html, "")
+
+    # yy) Telegram 收件箱(v2.17.0):白名单接收、去重、删除;不影响既有功能
+    mock_tg = serve(MockTG)
+    cas_web.TG_API = "http://127.0.0.1:%d" % mock_tg.server_address[1]
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"tg_bot_token": "TESTTOKEN", "tg_allow_id": "42"})
+    check("TG 设置可保存", d["ok"], d)
+    st, d, _ = req("GET", base + "/api/settings")
+    check("TG Token 只报已设置", d["data"]["tg_bot_token_set"] is True
+          and d["data"]["tg_allow_id"] == "42", d["data"])
+    doc = {"file_id": "F1", "file_name": "扫描到的影片.cas"}
+    MOCKTG["updates"] = [{"update_id": 1001, "message": {
+        "from": {"id": 42}, "chat": {"id": 42}, "document": doc}}]
+    off = cas_web.tg_poll_once("TESTTOKEN", "42", 0)
+    check("TG 轮询 offset 推进", off == 1002, off)
+    st, d, _ = req("GET", base + "/api/inbox")
+    check("TG 文件已存入收件箱", len(d["data"]) == 1
+          and d["data"][0]["info"]["name"] == "扫描到的影片.mkv", d["data"])
+    check("TG 已回复存入确认", any("已存入收件箱" in (m.get("text") or "")
+                                   for m in MOCKTG["sent"]), MOCKTG["sent"])
+    inbox_id = d["data"][0]["id"]
+    MOCKTG["updates"] = [{"update_id": 1002, "message": {
+        "from": {"id": 99}, "chat": {"id": 99}, "document": doc}}]
+    cas_web.tg_poll_once("TESTTOKEN", "42", 1002)
+    st, d, _ = req("GET", base + "/api/inbox")
+    check("非白名单用户文件被忽略", len(d["data"]) == 1, d["data"])
+    MOCKTG["updates"] = [{"update_id": 1003, "message": {
+        "from": {"id": 42}, "chat": {"id": 42}, "document": doc}}]
+    cas_web.tg_poll_once("TESTTOKEN", "42", 1003)
+    st, d, _ = req("GET", base + "/api/inbox")
+    check("重复文件不重复存入", len(d["data"]) == 1, d["data"])
+    st, d, _ = req("POST", base + "/api/inbox/delete", {"ids": [inbox_id]})
+    check("收件箱删除", d["ok"] and d["data"]["deleted"] == 1, d)
+    st, d, _ = req("GET", base + "/api/inbox")
+    check("收件箱已清空", d["data"] == [], d["data"])
+    html = cw2.INDEX_HTML
+    check("收件箱前端齐备", 'id="tab-inbox"' in html
+          and "pushInboxToRestore" in html and 'id="cfgtg"' in html, "")
 
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
