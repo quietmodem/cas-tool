@@ -1324,6 +1324,10 @@ def main():
     check("筛选提示词无斜杠误导", "多个关键字用空格分隔" in html
           and "仙逆 / S01E16" not in html, "")
 
+    # jjj) 收件箱清空按钮(v2.26.0)
+    html = cw2.INDEX_HTML
+    check("清空收件箱前端齐备", "clearInbox" in html and "清空收件箱" in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),

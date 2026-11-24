@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.25.1"
+VERSION = "2.26.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1830,7 +1830,8 @@ button:disabled{opacity:.35}
 <div class="row" id="inboxselrow"></div>
 <div class="row"><button class="green" onclick="pushInboxToRestore()">⬆ 推送到还原区</button>
 <button class="grey" onclick="downloadInboxZip()">⬇ 打包下载所选</button>
-<button class="grey" onclick="deleteInboxSel()">删除所选</button></div>
+<button class="grey" onclick="deleteInboxSel()">删除所选</button>
+<button class="grey" onclick="clearInbox()">清空收件箱</button></div>
 <div class="row"><button onclick="openInboxBatchSave()">批量另存到网盘</button></div>
 </div>
 </div></div>
@@ -2383,6 +2384,13 @@ function downloadInboxZip(){
   const sel=pickedInbox();
   if(!sel.length){ alert('请先勾选要打包下载的 CAS'); return; }
   saveBlob(makeZip(dedupeNames(sel.map(it=>({name:it.name, bytes:b64ToBytes(it.b64)})))), 'cas-inbox.zip');
+}
+async function clearInbox(){
+  if(!inboxItems.length) return;
+  if(!await askConfirm('确定要清空收件箱吗?共 '+inboxItems.length+' 份 CAS 将全部删除,仅删除收件箱中的记录,此操作不可恢复。')) return;
+  const d=await api('/api/inbox/delete',{ids:inboxItems.map(x=>x.id)});
+  if(d.ok){ $('inboxmsg').innerHTML='<span class=good>收件箱已清空,共删除 '+d.data.deleted+' 份</span>'; loadInbox(); }
+  else $('inboxmsg').innerHTML='<span class=err>'+esc(d.msg)+'</span>';
 }
 async function deleteInboxSel(){
   const picked=pickedInbox();
