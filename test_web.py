@@ -1299,6 +1299,13 @@ def main():
           and "applyJobFilter" in html and "applyInboxFilter" in html
           and "rowVisible" in html, "")
 
+    # fff) 还原区与收件箱默认不勾选(v2.23.0)
+    html = cw2.INDEX_HTML
+    check("默认不勾选规则齐备", "it.checked" in html
+          and "if(isMixed()) applyMixSelection('ty')" not in html
+          and "if(inboxMixed()) applyInboxSelection('ty')" not in html
+          and "仅还原已勾选的" in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),

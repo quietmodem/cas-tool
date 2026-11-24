@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.22.0"
+VERSION = "2.23.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1974,7 +1974,7 @@ function applyMixSelection(side){
   if(side==='mb' && !cloudOn('139')) side='ty';
   mixSide=side;
   batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); if(!c||!it.info) return; if(!rowVisible(c)) return; const cl=itemCloud(it);
-    c.checked = cl==='both'? true : (side==='ty'? cl==='189' : cl==='139'); });
+    c.checked = cl==='both'? true : (side==='ty'? cl==='189' : cl==='139'); it.checked=c.checked; });
   syncBatchAll();
 }
 async function collectItems(){
@@ -2004,7 +2004,7 @@ async function inspectCas(){
   }
   touched189=false; touched139=false; mixSide='ty';
   renderBatch(); refreshBtns();
-  if(isMixed()) applyMixSelection('ty'); else syncTargetToKinds();
+  syncTargetToKinds();
   $('restorebox').style.display='block';
 }
 function clearRestore(){
@@ -2018,15 +2018,15 @@ function clearRestore(){
 }
 let batchKw='';
 function applyBatchFilter(){ applyListFilter($('inspect'), $('batchfilter'), $('batchcount')); }
-function batchAll(v){ if(isMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ if(!v || rowVisible(c)) c.checked = v; }); refreshBtns(); syncTargetToKinds(); }
-function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); syncTargetToKinds(); }
+function batchAll(v){ if(isMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ if(!v || rowVisible(c)){ c.checked = v; const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=v; } }); refreshBtns(); syncTargetToKinds(); }
+function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); cs.forEach(c=>{ const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=c.checked; }); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); syncTargetToKinds(); }
 function renderBatch(){
   const mixed = isMixed();
-  const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto" checked onchange="batchAll(this.checked)"'+(mixed?' disabled':'')+'> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</span>'
+  const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto"'+(batchItems.every(it=>it.checked)? ' checked':'')+' onchange="batchAll(this.checked)"'+(mixed?' disabled':'')+'> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(仅还原已勾选的)</span>'
     +(mixed? (cloudOn('189')? ' <button class="small grey" onclick="applyMixSelection(\'ty\')">全选天翼</button>' : '')+(cloudOn('139')? ' <button class="small grey" onclick="applyMixSelection(\'mb\')">全选移动</button>' : '')+' <span class=mut>含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
   const filterRow = batchItems.length? '<div class="row" style="margin:6px 0"><input id="batchfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" value="'+esc(batchKw)+'" oninput="batchKw=this.value;applyBatchFilter()"><button class="small grey" onclick="batchKw=\'\';renderBatch()">清除</button><span class="mut" id="batchcount"></span></div>' : '';
   $('inspect').innerHTML = head + filterRow + batchItems.map((it,i)=>
-    it.info? '<div data-kw="'+esc(it.info.name+' '+(it.src||''))+'"><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
+    it.info? '<div data-kw="'+esc(it.info.name+' '+(it.src||''))+'"><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto"'+(it.checked? ' checked':'')+' onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
       ' <button class="small grey" onclick="renameStart('+i+')">重命名</button>'+
       (it.origName && it.origName!==it.info.name? '<br><span class=kv>原名: '+esc(it.origName)+'</span>':'')+
       '<div id="rn'+i+'" style="display:none;margin:4px 0"><input id="rnin'+i+'" style="width:70%"> <button class="small green" onclick="renameSave('+i+')">保存</button> <button class="small grey" onclick="renderBatch()">取消</button></div>'+
@@ -2051,9 +2051,7 @@ async function renameSave(i){
   if(!d.ok){ alert(d.msg); return; }
   if(!it.origName) it.origName=it.info.name;
   it.b64=d.data.cas_b64; it.info.name=d.data.name;
-  const states=Array.from(document.querySelectorAll('.itchk')).map(c=>c.checked);
   renderBatch();
-  document.querySelectorAll('.itchk').forEach((c,j)=>{ if(states[j]!==undefined) c.checked=states[j]; });
   syncBatchAll();
   setSt(i,'已重命名为《'+v+'》,还原与保存的 CAS 都会用新名','good');
 }
@@ -2112,7 +2110,7 @@ function pushScanToRestore(){
   renderBatch();
   $('restorebox').style.display='block';
   refreshBtns();
-  if(isMixed()) applyMixSelection('ty'); else syncTargetToKinds();
+  syncTargetToKinds();
   $('scanrestoremsg').innerHTML='<span class=good>已推送 '+added+' 份到还原区</span>'
     +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'');
   switchTab('restore');
@@ -2225,7 +2223,6 @@ async function loadInbox(){
   const d=await api('/api/inbox');
   inboxItems = d.ok? (d.data||[]) : [];
   renderInbox();
-  if(inboxMixed()) applyInboxSelection('ty');
 }
 function inboxMixed(){
   let a=false,b=false;
@@ -2267,7 +2264,7 @@ function pushOneInbox(i){
   renderBatch();
   $('restorebox').style.display='block';
   refreshBtns();
-  if(isMixed()) applyMixSelection('ty'); else syncTargetToKinds();
+  syncTargetToKinds();
   switchTab('restore');
   window.scrollTo({top:0, behavior:'smooth'});
 }
@@ -2283,7 +2280,7 @@ function pushInboxToRestore(){
   renderBatch();
   $('restorebox').style.display='block';
   refreshBtns();
-  if(isMixed()) applyMixSelection('ty'); else syncTargetToKinds();
+  syncTargetToKinds();
   $('inboxmsg').innerHTML='<span class=good>已推送 '+added+' 份到还原区</span>'
     +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'');
   switchTab('restore');
