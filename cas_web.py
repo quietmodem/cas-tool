@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.21.0"
+VERSION = "2.22.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1794,7 +1794,7 @@ button:disabled{opacity:.35}
 <div id="m139entries"></div>
 <div class="row"><button class="small grey" onclick="m139UpBtn()">⬆ 上级</button><button class="small grey" onclick="genMkdir('139')">＋ 新建目录</button></div></div>
 
-<div class="card"><h2>任务</h2><div id="jobs" class="mut">暂无</div><div id="jobsmsg" class="msg"></div></div>
+<div class="card"><h2>任务</h2><div class="row"><input id="jobfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" oninput="applyJobFilter()"><button class="small grey" onclick="$('jobfilter').value='';applyJobFilter()">清除</button><span class="mut" id="jobcount"></span></div><div id="jobs" class="mut">暂无</div><div id="jobsmsg" class="msg"></div></div>
 </div>
 
 <div id="tab-scan" style="display:none">
@@ -1805,6 +1805,7 @@ button:disabled{opacity:.35}
 <button class="small" onclick="scanCas()">开始扫描</button></div>
 <label class="mut"><input type="checkbox" id="scanrec" style="width:auto" checked> 包含子文件夹(递归最多 6 层,最多取 300 份)</label>
 <div id="scanmsg" class="msg"></div>
+<div class="row"><input id="scanfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" oninput="applyScanFilter()"><button class="small grey" onclick="$('scanfilter').value='';applyScanFilter()">清除</button><span class="mut" id="scancount"></span></div>
 <div id="scanlist"></div>
 <div id="scanbtns" style="display:none">
 <div class="row"><button class="small grey" onclick="scanCheckAllFull()">全选</button>
@@ -1823,6 +1824,7 @@ button:disabled{opacity:.35}
 <div class="card"><h2>📥 收件箱</h2>
 <div class="mut">通过 Telegram 机器人发来的 CAS 文件存放在这里,与还原区互不影响;勾选后推送到还原区,再选目录还原。</div>
 <div id="inboxmsg" class="msg"></div>
+<div class="row"><input id="inboxfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" oninput="applyInboxFilter()"><button class="small grey" onclick="$('inboxfilter').value='';applyInboxFilter()">清除</button><span class="mut" id="inboxcount"></span></div>
 <div id="inboxlist"></div>
 <div id="inboxbtns" style="display:none">
 <div class="row" id="inboxselrow"></div>
@@ -1913,6 +1915,26 @@ async function api(url, body){
 }
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function cloudOn(c){ return c==='189'? SETTINGS.tianyi_enabled!==false : SETTINGS.mobile_enabled!==false; }
+function kwMatch(text, kw){
+  const words=String(kw||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if(!words.length) return true;
+  const t=String(text||'').toLowerCase();
+  return words.every(w=>t.indexOf(w)>=0);
+}
+function applyListFilter(listEl, inputEl, countEl){
+  if(!listEl) return;
+  const kw=inputEl? inputEl.value : '';
+  let vis=0, tot=0;
+  Array.from(listEl.children).forEach(row=>{
+    if(row.dataset.kw===undefined) return;
+    tot++;
+    const show=kwMatch(row.dataset.kw, kw);
+    row.style.display=show? '' : 'none';
+    if(show) vis++;
+  });
+  if(countEl) countEl.textContent = String(kw||'').trim()? ('显示 '+vis+' / 共 '+tot+' 份') : '';
+}
+function rowVisible(c){ const r=c.closest('[data-kw]'); return !r || r.style.display!=='none'; }
 function applyCloudVisibility(){
   const ty=cloudOn('189'), mb=cloudOn('139');
   if($('btnTy')) $('btnTy').style.display=ty?'':'none';
@@ -1951,7 +1973,7 @@ function applyMixSelection(side){
   if(side==='ty' && !cloudOn('189')) side='mb';
   if(side==='mb' && !cloudOn('139')) side='ty';
   mixSide=side;
-  batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); if(!c||!it.info) return; const cl=itemCloud(it);
+  batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); if(!c||!it.info) return; if(!rowVisible(c)) return; const cl=itemCloud(it);
     c.checked = cl==='both'? true : (side==='ty'? cl==='189' : cl==='139'); });
   syncBatchAll();
 }
@@ -1994,22 +2016,26 @@ function clearRestore(){
   $('restorebox').style.display='none';
   refreshBtns();
 }
-function batchAll(v){ if(isMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ c.checked = v; }); refreshBtns(); syncTargetToKinds(); }
+let batchKw='';
+function applyBatchFilter(){ applyListFilter($('inspect'), $('batchfilter'), $('batchcount')); }
+function batchAll(v){ if(isMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ if(!v || rowVisible(c)) c.checked = v; }); refreshBtns(); syncTargetToKinds(); }
 function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); syncTargetToKinds(); }
 function renderBatch(){
   const mixed = isMixed();
   const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto" checked onchange="batchAll(this.checked)"'+(mixed?' disabled':'')+'> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</span>'
     +(mixed? (cloudOn('189')? ' <button class="small grey" onclick="applyMixSelection(\'ty\')">全选天翼</button>' : '')+(cloudOn('139')? ' <button class="small grey" onclick="applyMixSelection(\'mb\')">全选移动</button>' : '')+' <span class=mut>含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
-  $('inspect').innerHTML = head + batchItems.map((it,i)=>
-    it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
+  const filterRow = batchItems.length? '<div class="row" style="margin:6px 0"><input id="batchfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" value="'+esc(batchKw)+'" oninput="batchKw=this.value;applyBatchFilter()"><button class="small grey" onclick="batchKw=\'\';renderBatch()">清除</button><span class="mut" id="batchcount"></span></div>' : '';
+  $('inspect').innerHTML = head + filterRow + batchItems.map((it,i)=>
+    it.info? '<div data-kw="'+esc(it.info.name+' '+(it.src||''))+'"><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
       ' <button class="small grey" onclick="renameStart('+i+')">重命名</button>'+
       (it.origName && it.origName!==it.info.name? '<br><span class=kv>原名: '+esc(it.origName)+'</span>':'')+
       '<div id="rn'+i+'" style="display:none;margin:4px 0"><input id="rnin'+i+'" style="width:70%"> <button class="small green" onclick="renameSave('+i+')">保存</button> <button class="small grey" onclick="renderBatch()">取消</button></div>'+
       (it.src? '<br><span class=kv>来源: '+esc(it.src)+'</span>':'')+
       '<br><span class=kv>md5: '+esc(it.info.md5||'(空)')+' · sliceMd5: '+esc(it.info.sliceMd5||'(空)')+' · sha256: '+esc(it.info.sha256||'(空)')+'</span>'
       +'</div>'
-           : '<div>📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
+           : '<div data-kw="'+esc(it.name)+'">📄 '+esc(it.name)+' <span class=err>解析失败: '+esc(it.err)+'</span></div>'
   ).join('');
+  applyBatchFilter();
 }
 function renameStart(i){
   const ed=$('rn'+i); if(!ed) return;
@@ -2063,13 +2089,15 @@ function scanStateInfo(it){
   if(it.origState==='name_conflict') return {text:' ⚠ 同名文件大小不一致(现有 '+esc(it.origSize)+' 字节)', cls:'err'};
   return {text:'', cls:'mut'};
 }
+function applyScanFilter(){ applyListFilter($('scanlist'), $('scanfilter'), $('scancount')); }
 function renderScan(){ setTimeout(refreshBtns, 0);
   $('scanlist').innerHTML = scanItems.map((it,i)=>
-    '<div><label><input type="checkbox" class="scanchk" data-i="'+i+'" style="width:auto" onchange="refreshBtns()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="sst'+i+'" class="'+scanStateInfo(it).cls+'">'+scanStateInfo(it).text+'</span>'+
+    '<div data-kw="'+esc(it.info.name+' '+it.src)+'"><label><input type="checkbox" class="scanchk" data-i="'+i+'" style="width:auto" onchange="refreshBtns()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="sst'+i+'" class="'+scanStateInfo(it).cls+'">'+scanStateInfo(it).text+'</span>'+
     '<br><span class=kv>来源: '+esc(it.src)+'</span></div>').join('');
+  applyScanFilter();
 }
-function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>{ const it=scanItems[Number(c.dataset.i)]; c.checked = v && it && it.origState==='missing'; }); refreshBtns(); }
-function scanCheckAllFull(){ document.querySelectorAll('.scanchk').forEach(c=>{ c.checked=true; }); refreshBtns(); }
+function scanCheckAll(v){ document.querySelectorAll('.scanchk').forEach(c=>{ if(v && !rowVisible(c)) return; const it=scanItems[Number(c.dataset.i)]; c.checked = v && it && it.origState==='missing'; }); refreshBtns(); }
+function scanCheckAllFull(){ document.querySelectorAll('.scanchk').forEach(c=>{ if(!rowVisible(c)) return; c.checked=true; }); refreshBtns(); }
 function scanSetSt(i,txt,cls){ const el=$('sst'+i); if(el){ el.textContent=txt; el.className=cls; } }
 function pushScanToRestore(){
   const picked=[];
@@ -2207,9 +2235,10 @@ function inboxMixed(){
 function applyInboxSelection(side){
   if(side==='ty' && !cloudOn('189')) side='mb';
   if(side==='mb' && !cloudOn('139')) side='ty';
-  inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(!c) return; const cl=itemCloud(it);
+  inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(!c) return; if(!rowVisible(c)) return; const cl=itemCloud(it);
     c.checked = cl==='both'? true : (side==='ty'? cl==='189' : cl==='139'); });
 }
+function applyInboxFilter(){ applyListFilter($('inboxlist'), $('inboxfilter'), $('inboxcount')); }
 function renderInbox(){
   $('inboxbtns').style.display = inboxItems.length? 'block':'none';
   const mixed=inboxMixed();
@@ -2220,11 +2249,12 @@ function renderInbox(){
     +'<button class="small grey" onclick="inboxCheckAll(false)">全不选</button> <span class=mut>含天翼版与移动版 CAS,须分开另存</span>'
     : '<button class="small grey" onclick="inboxCheckAll(true)">全选</button><button class="small grey" onclick="inboxCheckAll(false)">全不选</button>';
   $('inboxlist').innerHTML = inboxItems.length? inboxItems.map((it,i)=>
-    '<div><label><input type="checkbox" class="inboxchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span>'+
+    '<div data-kw="'+esc(it.info.name+' '+(it.name||''))+'"><label><input type="checkbox" class="inboxchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span>'+
     '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span> <button class="small green" onclick="pushOneInbox('+i+')">推送还原区</button>'+(((itemCloud(it)==='189'&&!cloudOn('189'))||(itemCloud(it)==='139'&&!cloudOn('139')))? '' : ' <button class="small" onclick="openInboxSave('+i+')">另存到网盘</button>')+'</div>').join('')
     : '<div class="mut" style="padding:8px 2px">收件箱为空。在 Telegram 里把 .cas 文件发给机器人即可存入(需先在设置里配置机器人)。</div>';
+  applyInboxFilter();
 }
-function inboxCheckAll(v){ if(v && inboxMixed()) return; document.querySelectorAll('.inboxchk').forEach(c=>{ c.checked=v; }); }
+function inboxCheckAll(v){ if(v && inboxMixed()) return; document.querySelectorAll('.inboxchk').forEach(c=>{ if(v && !rowVisible(c)) return; c.checked=v; }); }
 function pickedInbox(){ const out=[]; inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(c && c.checked) out.push(it); }); return out; }
 function pushOneInbox(i){
   const it=inboxItems[i]; if(!it) return;
@@ -3081,7 +3111,8 @@ async function pushGenToRestore(jid, btn){
   showTab('restore');
   window.scrollTo({top:0, behavior:'smooth'});
 }
-function jobsAll(v){ document.querySelectorAll('.jobchk').forEach(c=>{ c.checked=v; if(v) checkedJobIds.add(c.dataset.id); else checkedJobIds.delete(c.dataset.id); }); }
+function applyJobFilter(){ applyListFilter($('jobs'), $('jobfilter'), $('jobcount')); }
+function jobsAll(v){ document.querySelectorAll('.jobchk').forEach(c=>{ if(v && !rowVisible(c)) return; c.checked=v; if(v) checkedJobIds.add(c.dataset.id); else checkedJobIds.delete(c.dataset.id); }); }
 function jobCheckChanged(c){ if(c.checked) checkedJobIds.add(c.dataset.id); else checkedJobIds.delete(c.dataset.id); }
 let confirmResolve=null;
 function askConfirm(text){ return new Promise(res=>{ confirmResolve=res; $('confirmtext').textContent=text; $('confirmbox').style.display='flex'; }); }
@@ -3195,12 +3226,13 @@ async function loadJobs(){
   $('jobs').innerHTML =
     '<div class=row style="flex-wrap:wrap"><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small green" onclick="downloadJobsZip()">批量下载 CAS</button><button class="small" onclick="openGenBatchSave()">批量另存到网盘</button><button class="small grey" onclick="deleteJobCas()">批量删除 CAS</button><button class="small grey" onclick="deleteJobSources()">删除源文件</button><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
     + d.data.map(j=>
-    '<div style="margin:8px 0"><div><label><input type="checkbox" class="jobchk" data-id="'+j.id+'" style="width:auto" onchange="jobCheckChanged(this)"'+(checkedJobIds.has(j.id)? ' checked':'')+'> '+esc(j.title)+'</label></div>'
+    '<div data-kw="'+esc(j.title+' '+(j.path||''))+'" style="margin:8px 0"><div><label><input type="checkbox" class="jobchk" data-id="'+j.id+'" style="width:auto" onchange="jobCheckChanged(this)"'+(checkedJobIds.has(j.id)? ' checked':'')+'> '+esc(j.title)+'</label></div>'
     +(j.path? '<div class=kv>📁 '+esc(j.path)+'</div>':'')+
     '<div class=mut>'+esc(j.status)+(j.progress!=null? ' · '+j.progress+'%':'')+' · '+esc(j.message||'')+'</div>'+
     (j.progress!=null&&j.status==='running'? '<div class=bar><i style="width:'+j.progress+'%"></i></div>':'')+
     (j.status==='done'&&j.result? '<div class=good>生成完成'+(j.result.uploaded_to? ' · 已保存至 '+esc(j.result.uploaded_to):'')+(j.result.source_deleted? ' · 源文件已删除':'')+(j.result.cas_deleted? ' · CAS 文件已从原目录删除':'')+'</div>'+(j.result.cas_b64? '<div class=row style="margin-top:6px"><a download="'+esc((j.result.name||'file')+'.cas')+'" href="data:text/plain;base64,'+j.result.cas_b64+'"><button class="small green">⬇ 下载 .cas</button></a><button class="small" onclick="pushGenToRestore(\''+j.id+'\',this)">⬆ 推送到还原区</button></div>':''):'')+
     '</div>').join('');
+  applyJobFilter();
 }
 status(); loadSettings(); loadList(); loadJobs(); refreshBtns();
 setInterval(loadJobs, 2500);

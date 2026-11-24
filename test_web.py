@@ -1290,6 +1290,15 @@ def main():
           and "openGenBatchSave" in html and "doGenBatchSave" in html
           and "/api/savecas" in html and "genbatch" in html, "")
 
+    # eee) 四个列表关键字筛选(v2.22.0)
+    html = cw2.INDEX_HTML
+    check("关键字筛选前端齐备", "kwMatch" in html and "applyListFilter" in html
+          and 'id="batchfilter"' in html and 'id="scanfilter"' in html
+          and 'id="jobfilter"' in html and 'id="inboxfilter"' in html
+          and "applyBatchFilter" in html and "applyScanFilter" in html
+          and "applyJobFilter" in html and "applyInboxFilter" in html
+          and "rowVisible" in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),
