@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.20.1"
+VERSION = "2.21.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1275,6 +1275,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.api_inbox_save(body)
                 except Exception as e:  # noqa: BLE001
                     return self.fail(str(e))
+            if path == "/api/savecas":
+                try:
+                    return self.api_save_cas(body)
+                except Exception as e:  # noqa: BLE001
+                    return self.fail(str(e))
             if path == "/api/scan":
                 return self.api_scan(body)
             if path == "/api/settings":
@@ -1584,41 +1589,66 @@ class Handler(BaseHTTPRequestHandler):
         ol_put(dest, cas_bytes)
         return self.ok({"path": dest})
 
+    def _save_cas_to_cloud(self, raw, fname, cloud, body):
+        """把一份 .cas 字节存入所选云盘目录。类型校验与还原一致:
+        天翼版只能存天翼、移动版只能存移动、双填版均可;
+        保存后回查目标目录确认文件已在。成功返回展示路径,失败抛 ValueError。"""
+        kind = cas_summary(raw).get("kind") or ""
+        if cloud == "189":
+            if kind.startswith("mobile"):
+                raise ValueError("移动版 CAS 不能保存到天翼云盘")
+            d = (body.get("dir") or "/").rstrip("/") or "/"
+            dest = d.rstrip("/") + "/" + fname
+            ol_put(dest, raw)
+            entries = ol_list(d, refresh=True)
+            if not any((e.get("name") or "") == fname for e in entries):
+                raise ValueError("保存后回查未在目标目录中找到该文件")
+            return "天翼云盘:" + dest
+        if cloud == "139":
+            if kind.startswith("tianyi"):
+                raise ValueError("天翼版 CAS 不能保存到移动云盘")
+            parent = (body.get("parent") or "/").strip() or "/"
+            ct.upload_139_bytes(m139_basic(), parent, fname, raw)
+            entries = ct.list_139_files(m139_basic(), parent)
+            base = fname[:-4] if fname.lower().endswith(".cas") else fname
+            if not any((e.get("name") or "") == fname
+                       or (e.get("name") or "").startswith(base + "(")
+                       for e in entries):
+                raise ValueError("保存后回查未在目标目录中找到该文件")
+            return "移动云盘:" + fname
+        raise ValueError("未指定保存到哪个云盘")
+
     def api_inbox_save(self, body):
-        """收件箱「另存到网盘」:把 .cas 文件本身存入所选云盘目录。
-        类型校验与还原一致:天翼版只能存天翼、移动版只能存移动、双填版均可;
-        保存后回查目标目录确认文件已在。"""
+        """收件箱「另存到网盘」:把收件箱中的 .cas 存入所选云盘目录。"""
         item = next((x for x in load_inbox()
                      if x.get("id") == (body.get("id") or "")), None)
         if not item:
             return self.fail("收件箱中已无此文件")
         raw = base64.b64decode(item["b64"])
-        kind = (item.get("info") or {}).get("kind") or ""
-        cloud = body.get("cloud") or ""
-        if cloud == "189":
-            if kind.startswith("mobile"):
-                return self.fail("移动版 CAS 不能保存到天翼云盘")
-            d = (body.get("dir") or "/").rstrip("/") or "/"
-            dest = d.rstrip("/") + "/" + item["name"]
-            ol_put(dest, raw)
-            entries = ol_list(d, refresh=True)
-            if not any((e.get("name") or "") == item["name"] for e in entries):
-                return self.fail("保存后回查未在目标目录中找到该文件")
-            return self.ok({"path": "天翼云盘:" + dest})
-        if cloud == "139":
-            if kind.startswith("tianyi"):
-                return self.fail("天翼版 CAS 不能保存到移动云盘")
-            parent = (body.get("parent") or "/").strip() or "/"
-            ct.upload_139_bytes(m139_basic(), parent, item["name"], raw)
-            entries = ct.list_139_files(m139_basic(), parent)
-            base = item["name"][:-4] if item["name"].lower().endswith(".cas") \
-                else item["name"]
-            if not any((e.get("name") or "") == item["name"]
-                       or (e.get("name") or "").startswith(base + "(")
-                       for e in entries):
-                return self.fail("保存后回查未在目标目录中找到该文件")
-            return self.ok({"path": "移动云盘:" + item["name"]})
-        return self.fail("未指定保存到哪个云盘")
+        try:
+            path = self._save_cas_to_cloud(raw, item["name"],
+                                           body.get("cloud") or "", body)
+        except ValueError as e:
+            return self.fail(str(e))
+        return self.ok({"path": path})
+
+    def api_save_cas(self, body):
+        """把请求中携带的一份 .cas 存入所选云盘目录(生成区批量另存用)。"""
+        try:
+            raw = base64.b64decode(body.get("cas_b64") or "")
+            summary = cas_summary(raw)
+        except Exception:  # noqa: BLE001
+            return self.fail("CAS 数据无效")
+        fname = (body.get("file_name") or "").strip() \
+            or ((summary.get("name") or "file") + ".cas")
+        if "/" in fname or "\\" in fname:
+            return self.fail("文件名不合法")
+        try:
+            path = self._save_cas_to_cloud(raw, fname,
+                                           body.get("cloud") or "", body)
+        except ValueError as e:
+            return self.fail(str(e))
+        return self.ok({"path": path})
 
 
 
@@ -2191,11 +2221,26 @@ function renderInbox(){
     : '<button class="small grey" onclick="inboxCheckAll(true)">全选</button><button class="small grey" onclick="inboxCheckAll(false)">全不选</button>';
   $('inboxlist').innerHTML = inboxItems.length? inboxItems.map((it,i)=>
     '<div><label><input type="checkbox" class="inboxchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span>'+
-    '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span>'+(((itemCloud(it)==='189'&&!cloudOn('189'))||(itemCloud(it)==='139'&&!cloudOn('139')))? '' : ' <button class="small" onclick="openInboxSave('+i+')">另存到网盘</button>')+'</div>').join('')
+    '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span> <button class="small green" onclick="pushOneInbox('+i+')">推送还原区</button>'+(((itemCloud(it)==='189'&&!cloudOn('189'))||(itemCloud(it)==='139'&&!cloudOn('139')))? '' : ' <button class="small" onclick="openInboxSave('+i+')">另存到网盘</button>')+'</div>').join('')
     : '<div class="mut" style="padding:8px 2px">收件箱为空。在 Telegram 里把 .cas 文件发给机器人即可存入(需先在设置里配置机器人)。</div>';
 }
 function inboxCheckAll(v){ if(v && inboxMixed()) return; document.querySelectorAll('.inboxchk').forEach(c=>{ c.checked=v; }); }
 function pickedInbox(){ const out=[]; inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(c && c.checked) out.push(it); }); return out; }
+function pushOneInbox(i){
+  const it=inboxItems[i]; if(!it) return;
+  if(batchItems.some(b=>b.b64===it.b64)){
+    $('inboxmsg').innerHTML='<span class=mut>这份 CAS 已在还原区</span>';
+  } else {
+    batchItems.push({name:it.name, b64:it.b64, src:'收件箱', info:it.info});
+    $('inboxmsg').innerHTML='<span class=good>已推送 1 份到还原区</span>';
+  }
+  renderBatch();
+  $('restorebox').style.display='block';
+  refreshBtns();
+  if(isMixed()) applyMixSelection('ty'); else syncTargetToKinds();
+  switchTab('restore');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
 function pushInboxToRestore(){
   const picked=pickedInbox();
   if(!picked.length){ alert('请先在收件箱中勾选 cas'); return; }
@@ -2412,6 +2457,8 @@ function casWarnFor(cloud){
   } else if(pickerTarget==='inboxbatch'){
     s=new Set();
     for(const it of pickedInbox()){ const c=itemCloud(it); if(c) s.add(c); }
+  } else if(pickerTarget==='genbatch'){
+    s=new Set(['both']);
   } else s=checkedKinds();
   if(!s.size) return '';
   if(cloud==='139' && !s.has('139') && !s.has('both')) return '所选 cas 为天翼版,仅可还原到天翼云盘';
@@ -2515,12 +2562,12 @@ function togglePicker(targetId){
   p.style.display=show?'flex':'none';
 }
 function syncPickerTabs(){
-  const gated = pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch';
+  const gated = pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch'||pickerTarget==='genbatch';
   $('ptab189').style.display = (gated && !cloudOn('189'))? 'none':'';
   $('ptab139').style.display = (gated && !cloudOn('139'))? 'none':'';
 }
 function showPickerCloud(c){
-  if((pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch') && !cloudOn(c)) c = c==='189'? '139':'189';
+  if((pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch'||pickerTarget==='genbatch') && !cloudOn(c)) c = c==='189'? '139':'189';
   let w=(pickerTarget==='target189'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch')? casWarnFor(c) : '';
   if(w && (pickerTarget==='target189'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch')){
     const other=c==='139'? '189':'139';
@@ -2595,6 +2642,7 @@ function pickerHome(which){ const v=SETTINGS.tianyi_home; if(v){ pickerGo(v); } 
 function pickerPick(p){
   if(pickerTarget==='inboxsave'){ $('picker').style.display='none'; doInboxSave('189', p); return; }
   if(pickerTarget==='inboxbatch'){ $('picker').style.display='none'; doInboxBatchSave('189', p); return; }
+  if(pickerTarget==='genbatch'){ $('picker').style.display='none'; doGenBatchSave('189', p); return; }
   if(pickerTarget.indexOf('append:')===0){
     const ta=$(pickerTarget.slice(7));
     const lines=ta.value.split('\n').map(s=>s.trim()).filter(Boolean);
@@ -2679,6 +2727,7 @@ function pickerUse(){
     const nm=p139CurName();
     if(pickerTarget==='inboxsave'){ $('picker').style.display='none'; doInboxSave('139', cur.id); return; }
     if(pickerTarget==='inboxbatch'){ $('picker').style.display='none'; doInboxBatchSave('139', cur.id); return; }
+    if(pickerTarget==='genbatch'){ $('picker').style.display='none'; doGenBatchSave('139', cur.id); return; }
     if(pickerTarget==='target189'){ $('parent139').value=cur.id; picked139Path=nm; $('target189').value='移动云盘:'+nm; touched139=true; rememberLastDir('139', cur.id, nm); }
     else if(pickerTarget==='scanpath'){ scan139={id:cur.id,name:nm}; scanSrc='139'; $('scanpath').value='移动云盘:'+nm; }
     $('picker').style.display='none';
@@ -3064,6 +3113,33 @@ function downloadScanZip(){
   if(!sel.length){ alert('请先勾选要打包下载的 CAS'); return; }
   saveBlob(makeZip(dedupeNames(sel.map(it=>({name:it.name, bytes:b64ToBytes(it.b64)})))), 'cas-scan.zip');
 }
+function checkedGenJobs(){
+  const out=[];
+  Array.from(checkedJobIds).forEach(id=>{ const j=jobRecords[id];
+    if(j && j.status==='done' && j.result && j.result.cas_b64) out.push(j); });
+  return out;
+}
+function openGenBatchSave(){
+  const jobs=checkedGenJobs();
+  if(!jobs.length){ alert('请先勾选已生成完成的任务'); return; }
+  pickerTarget='genbatch';
+  seedPicker(cloudOn('139') && !cloudOn('189')? '139':'189');
+}
+async function doGenBatchSave(cloud, target){
+  const jobs=checkedGenJobs();
+  if(!jobs.length) return;
+  $('jobsmsg').innerHTML='<span class=mut>正在批量另存,共 '+jobs.length+' 份…</span>';
+  let okN=0; const fails=[];
+  for(const j of jobs){
+    const fname=(j.result.name||'file')+'.cas';
+    const body = cloud==='139'? {cas_b64:j.result.cas_b64, cloud:'139', parent:target, file_name:fname}
+                              : {cas_b64:j.result.cas_b64, cloud:'189', dir:target, file_name:fname};
+    const d=await api('/api/savecas', body);
+    if(d.ok) okN++; else fails.push(fname+':'+(d.msg||'失败'));
+  }
+  $('jobsmsg').innerHTML='<span class=good>批量另存完成:成功 '+okN+' 份</span>'
+    +(fails.length? '<br><span class=err>失败 '+fails.length+' 份:'+esc(fails.join(';'))+'</span>' : '');
+}
 function downloadJobsZip(){
   const files=[];
   Array.from(checkedJobIds).forEach(id=>{ const j=jobRecords[id];
@@ -3117,7 +3193,7 @@ async function loadJobs(){
   d.data.forEach(j=>{ jobRecords[j.id]=j; if(j.status==='done'&&j.result&&j.result.cas_b64) genResults[j.id]={name:j.result.name, b64:j.result.cas_b64}; });
   checkedJobIds=new Set(Array.from(checkedJobIds).filter(id=>jobRecords[id]));
   $('jobs').innerHTML =
-    '<div class=row style="flex-wrap:wrap"><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small green" onclick="downloadJobsZip()">批量下载 CAS</button><button class="small grey" onclick="deleteJobCas()">批量删除 CAS</button><button class="small grey" onclick="deleteJobSources()">删除源文件</button><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
+    '<div class=row style="flex-wrap:wrap"><label><input type="checkbox" style="width:auto" onchange="jobsAll(this.checked)"> <b>全选</b></label><span class=grow></span><button class="small green" onclick="downloadJobsZip()">批量下载 CAS</button><button class="small" onclick="openGenBatchSave()">批量另存到网盘</button><button class="small grey" onclick="deleteJobCas()">批量删除 CAS</button><button class="small grey" onclick="deleteJobSources()">删除源文件</button><button class="small grey" onclick="clearJobs(false)">清空已选</button><button class="small grey" onclick="clearJobs(true)">全部清空</button></div>'
     + d.data.map(j=>
     '<div style="margin:8px 0"><div><label><input type="checkbox" class="jobchk" data-id="'+j.id+'" style="width:auto" onchange="jobCheckChanged(this)"'+(checkedJobIds.has(j.id)? ' checked':'')+'> '+esc(j.title)+'</label></div>'
     +(j.path? '<div class=kv>📁 '+esc(j.path)+'</div>':'')+

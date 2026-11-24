@@ -1259,6 +1259,37 @@ def main():
     except RuntimeError as e:
         check("回查不到仍报失败", "未返回上传地址" in str(e), str(e))
 
+    # ddd) 通用另存接口 + 单份推送/生成区批量另存前端(v2.21.0)
+    import base64 as _b64
+    both_raw = ct.encode_cas({"name": "待删源文件.mkv", "size": 12345,
+                              "md5": "A" * 32, "sliceMd5": "B" * 32,
+                              "sha256": "d" * 64, "recover_pass": "",
+                              "create_time": 1700000000})
+    st, d, _ = req("POST", base + "/api/savecas",
+                   {"cas_b64": _b64.b64encode(both_raw).decode(),
+                    "cloud": "189", "dir": "/删除测试",
+                    "file_name": "待删源文件.mkv.cas"})
+    check("通用另存:双填存天翼", d["ok"], d)
+    st, d, _ = req("POST", base + "/api/savecas",
+                   {"cas_b64": _b64.b64encode(ty_raw).decode(),
+                    "cloud": "139", "parent": "D1",
+                    "file_name": "待删源文件.mkv.cas"})
+    check("通用另存:天翼版禁止存移动", not d["ok"] and "移动" in d["msg"], d)
+    st, d, _ = req("POST", base + "/api/savecas",
+                   {"cas_b64": _b64.b64encode(mb_raw).decode(),
+                    "cloud": "189", "dir": "/删除测试",
+                    "file_name": "样本.cas"})
+    check("通用另存:移动版禁止存天翼", not d["ok"] and "天翼" in d["msg"], d)
+    st, d, _ = req("POST", base + "/api/savecas",
+                   {"cas_b64": _b64.b64encode(mb_raw).decode(),
+                    "cloud": "139", "parent": "D1",
+                    "file_name": "样本.cas"})
+    check("通用另存:移动版存移动", d["ok"], d)
+    html = cw2.INDEX_HTML
+    check("单份推送与生成区批量另存前端齐备", "pushOneInbox" in html
+          and "openGenBatchSave" in html and "doGenBatchSave" in html
+          and "/api/savecas" in html and "genbatch" in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),
