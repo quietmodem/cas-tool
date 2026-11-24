@@ -465,6 +465,20 @@ def upload_139_bytes(basic, parent_id, name, data):
     ret_parts = [p for p in (resp.get("partInfos") or [])
                  if isinstance(p, dict) and p.get("uploadUrl")]
     if not ret_parts:
+        fid = resp.get("fileId") or ""
+        if fid and not resp.get("uploadId"):
+            # 内容已在云端时,create 可能直接返回文件对象:只有 fileId,
+            # 无 exist 标记、无 uploadId、无分片地址。回查目标目录确认
+            # 文件确已在,才按命中处理;查不到仍按失败报出。
+            try:
+                entries = list_139_files(basic, parent_id or "/")
+            except Exception:  # noqa: BLE001
+                entries = []
+            stem = name[:-4] if name.lower().endswith(".cas") else name
+            if any((e.get("name") or "") == name
+                   or (e.get("name") or "").startswith(stem + "(")
+                   for e in entries):
+                return {"fileId": fid, "exist": True}
         raise RuntimeError("139 create 未返回上传地址,也未秒传命中(响应摘要: %s)"
                            % json.dumps(resp, ensure_ascii=False)[:300])
     offsets = {}

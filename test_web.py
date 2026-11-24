@@ -315,6 +315,9 @@ class Mock139(BaseHTTPRequestHandler):
                           "size": 88188041773, "type": "file"},
                          {"fileId": "CAS1", "name": "样本.cas",
                           "size": len(MOCK_CAS_BYTES), "type": "file"}]
+            elif parent == "HITDIR":
+                items = [{"fileId": "FHIT", "name": "命中形状.cas",
+                          "size": 9, "type": "file"}]
             elif parent == "DEL139":
                 items = [{"fileId": "FDEL", "name": "待删源文件.mkv",
                           "size": len(CONTENT), "type": "file"},
@@ -345,7 +348,13 @@ class Mock139(BaseHTTPRequestHandler):
         if self.path == "/hcy/file/create":
             captured["create139"].append((dict(self.headers), json.loads(raw)))
             pl = json.loads(raw)
-            if str(pl.get("name") or "").endswith(".cas"):
+            if pl.get("name") in ("命中形状.cas", "假命中.cas"):
+                # 内容已在云端时 create 直接返回文件对象的形状:
+                # 只有 fileId/parentFileId,无 exist、无 uploadId、无分片
+                data = json.dumps({"code": "0000", "data": {
+                    "fileId": "FIDHIT",
+                    "parentFileId": pl.get("parentFileId") or ""}}).encode()
+            elif str(pl.get("name") or "").endswith(".cas"):
                 up = "http://127.0.0.1:%d/rawup139" % self.server.server_address[1]
                 data = json.dumps({"code": "0000", "data": {
                     "fileId": "CASF1", "uploadId": "UP1", "exist": False,
@@ -1238,6 +1247,17 @@ def main():
           and "doInboxBatchSave" in html and "批量另存到网盘" in html
           and "applyInboxSelection" in html and "inboxMixed" in html
           and "pickerTarget==='inboxbatch'" in html, "")
+
+    # ccc) 139 上传:create 直接返回文件对象(无 exist/分片)时回查确认(v2.20.1)
+    basic = cas_web.m139_basic()
+    r = ct.upload_139_bytes(basic, "HITDIR", "命中形状.cas", b"cas-bytes")
+    check("文件对象形状按命中处理", r.get("exist") is True
+          and r.get("fileId") == "FIDHIT", r)
+    try:
+        ct.upload_139_bytes(basic, "HITDIR", "假命中.cas", b"cas-bytes")
+        check("回查不到仍报失败", False, "应当抛出异常")
+    except RuntimeError as e:
+        check("回查不到仍报失败", "未返回上传地址" in str(e), str(e))
 
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
