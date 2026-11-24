@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.17.0"
+VERSION = "2.18.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1262,6 +1262,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "last_cloud": cur["last_cloud"]})
             if path == "/api/inbox/delete":
                 return self.ok({"deleted": inbox_delete(body.get("ids") or [])})
+            if path == "/api/inbox/save":
+                try:
+                    return self.api_inbox_save(body)
+                except Exception as e:  # noqa: BLE001
+                    return self.fail(str(e))
             if path == "/api/scan":
                 return self.api_scan(body)
             if path == "/api/settings":
@@ -1570,6 +1575,42 @@ class Handler(BaseHTTPRequestHandler):
         dest = (body.get("dir") or "/").rstrip("/") + "/" + video + ".cas"
         ol_put(dest, cas_bytes)
         return self.ok({"path": dest})
+
+    def api_inbox_save(self, body):
+        """收件箱「另存到网盘」:把 .cas 文件本身存入所选云盘目录。
+        类型校验与还原一致:天翼版只能存天翼、移动版只能存移动、双填版均可;
+        保存后回查目标目录确认文件已在。"""
+        item = next((x for x in load_inbox()
+                     if x.get("id") == (body.get("id") or "")), None)
+        if not item:
+            return self.fail("收件箱中已无此文件")
+        raw = base64.b64decode(item["b64"])
+        kind = (item.get("info") or {}).get("kind") or ""
+        cloud = body.get("cloud") or ""
+        if cloud == "189":
+            if kind.startswith("mobile"):
+                return self.fail("移动版 CAS 不能保存到天翼云盘")
+            d = (body.get("dir") or "/").rstrip("/") or "/"
+            dest = d.rstrip("/") + "/" + item["name"]
+            ol_put(dest, raw)
+            entries = ol_list(d, refresh=True)
+            if not any((e.get("name") or "") == item["name"] for e in entries):
+                return self.fail("保存后回查未在目标目录中找到该文件")
+            return self.ok({"path": "天翼云盘:" + dest})
+        if cloud == "139":
+            if kind.startswith("tianyi"):
+                return self.fail("天翼版 CAS 不能保存到移动云盘")
+            parent = (body.get("parent") or "/").strip() or "/"
+            ct.upload_139_bytes(m139_basic(), parent, item["name"], raw)
+            entries = ct.list_139_files(m139_basic(), parent)
+            base = item["name"][:-4] if item["name"].lower().endswith(".cas") \
+                else item["name"]
+            if not any((e.get("name") or "") == item["name"]
+                       or (e.get("name") or "").startswith(base + "(")
+                       for e in entries):
+                return self.fail("保存后回查未在目标目录中找到该文件")
+            return self.ok({"path": "移动云盘:" + item["name"]})
+        return self.fail("未指定保存到哪个云盘")
 
 
 
@@ -2098,7 +2139,7 @@ function renderInbox(){
   $('inboxbtns').style.display = inboxItems.length? 'block':'none';
   $('inboxlist').innerHTML = inboxItems.length? inboxItems.map((it,i)=>
     '<div><label><input type="checkbox" class="inboxchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span>'+
-    '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span></div>').join('')
+    '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span> <button class="small" onclick="openInboxSave('+i+')">另存到网盘</button></div>').join('')
     : '<div class="mut" style="padding:8px 2px">收件箱为空。在 Telegram 里把 .cas 文件发给机器人即可存入(需先在设置里配置机器人)。</div>';
 }
 function inboxCheckAll(v){ document.querySelectorAll('.inboxchk').forEach(c=>{ c.checked=v; }); }
@@ -2120,6 +2161,47 @@ function pushInboxToRestore(){
     +(added<picked.length? '(另有 '+(picked.length-added)+' 份已在还原区,跳过)':'');
   switchTab('restore');
   window.scrollTo({top:0, behavior:'smooth'});
+}
+let inboxSaveIdx=-1;
+function openInboxSave(i){
+  inboxSaveIdx=i;
+  const it=inboxItems[i]; if(!it) return;
+  pickerTarget='inboxsave';
+  $('pickercloudtabs').style.display='';
+  const roots=tianyiRoots().map((p,j)=>({label: j===0? '☁️ 天翼云盘' : '☁️ 天翼目录', path:p}));
+  pickerScope=roots.length? {roots:roots, base:''} : null;
+  if(itemCloud(it)==='139'){
+    pickerCloud='139';
+    const pid=SETTINGS.last_parent139||'';
+    const d0=(SETTINGS.mobile_dirs||[]).find(d=>d.id===pid);
+    if(pid) p139Stack=[{id:pid, name:(d0&&d0.name)||SETTINGS.last_parent139_name||'已选目录'}];
+    else { const r=pickerRoots139(); p139Stack=r.length? [{id:r[0].id, name:r[0].name}] : []; }
+  } else {
+    pickerCloud='189';
+    const tval=SETTINGS.last_target189||'';
+    if(pickerScope){
+      const hit=pickerScope.roots.find(r=>tval && (tval===r.path || tval.startsWith(r.path+'/')));
+      if(hit){ pickerScope.base=hit.path; pickerPath=tval; }
+      else if(pickerScope.roots.length===1){ pickerScope.base=pickerScope.roots[0].path; pickerPath=pickerScope.roots[0].path; }
+      else pickerPath='';
+    } else pickerPath=tval||'/';
+    p139Stack=[];
+  }
+  $('ph189').style.display=pickerScope? 'none':'';
+  $('picker').style.display='flex';
+  showPickerCloud(pickerCloud);
+  if(pickerCloud==='139' && p139Stack.length===1 && p139Stack[0].name.indexOf('/')>=0){
+    const pid0=p139Stack[0].id, nm0=p139Stack[0].name;
+    seed139Stack(pid0, nm0).then(st=>{ if(st.length>1 && $('picker').style.display!=='none' && pickerCloud==='139'){ p139Stack=st; load139Pane(); } });
+  }
+}
+async function doInboxSave(cloud, target){
+  const it=inboxItems[inboxSaveIdx]; if(!it) return;
+  $('inboxmsg').innerHTML='<span class=mut>正在保存到网盘…</span>';
+  const body = cloud==='139'? {id:it.id, cloud:'139', parent:target} : {id:it.id, cloud:'189', dir:target};
+  const d=await api('/api/inbox/save', body);
+  if(d.ok) $('inboxmsg').innerHTML='<span class=good>已保存:'+esc(d.data.path)+'</span>';
+  else $('inboxmsg').innerHTML='<span class=err>保存失败:'+esc(d.msg)+'</span>';
 }
 function downloadInboxZip(){
   const sel=pickedInbox();
@@ -2239,7 +2321,12 @@ function checkedKinds(){
   return s;
 }
 function casWarnFor(cloud){
-  const s=checkedKinds(); if(!s.size) return '';
+  let s;
+  if(pickerTarget==='inboxsave' && inboxSaveIdx>=0 && inboxItems[inboxSaveIdx]){
+    const c=itemCloud(inboxItems[inboxSaveIdx]);
+    s=new Set(c? [c] : []);
+  } else s=checkedKinds();
+  if(!s.size) return '';
   if(cloud==='139' && !s.has('139') && !s.has('both')) return '所选 cas 为天翼版,仅可还原到天翼云盘';
   if(cloud==='189' && !s.has('189') && !s.has('both')) return '所选 cas 为移动版,仅可还原到移动云盘';
   return '';
@@ -2340,8 +2427,8 @@ function togglePicker(targetId){
   p.style.display=show?'flex':'none';
 }
 function showPickerCloud(c){
-  let w=pickerTarget==='target189'? casWarnFor(c) : '';
-  if(w && pickerTarget==='target189'){
+  let w=(pickerTarget==='target189'||pickerTarget==='inboxsave')? casWarnFor(c) : '';
+  if(w && (pickerTarget==='target189'||pickerTarget==='inboxsave')){
     const other=c==='139'? '189':'139';
     if(!casWarnFor(other)){ alert('⚠ '+w); c=other; w=''; }
   }
@@ -2412,6 +2499,7 @@ function pickerUp(){
 }
 function pickerHome(which){ const v=SETTINGS.tianyi_home; if(v){ pickerGo(v); } else alert('未设置挂载目录,请先在「设置」页配置'); }
 function pickerPick(p){
+  if(pickerTarget==='inboxsave'){ $('picker').style.display='none'; doInboxSave('189', p); return; }
   if(pickerTarget.indexOf('append:')===0){
     const ta=$(pickerTarget.slice(7));
     const lines=ta.value.split('\n').map(s=>s.trim()).filter(Boolean);
@@ -2494,6 +2582,7 @@ function pickerUse(){
     if(!p139Stack.length){ alert('先进入一个目录'); return; }
     const cur=p139Stack[p139Stack.length-1];
     const nm=p139CurName();
+    if(pickerTarget==='inboxsave'){ $('picker').style.display='none'; doInboxSave('139', cur.id); return; }
     if(pickerTarget==='target189'){ $('parent139').value=cur.id; picked139Path=nm; $('target189').value='移动云盘:'+nm; touched139=true; rememberLastDir('139', cur.id, nm); }
     else if(pickerTarget==='scanpath'){ scan139={id:cur.id,name:nm}; scanSrc='139'; $('scanpath').value='移动云盘:'+nm; }
     $('picker').style.display='none';

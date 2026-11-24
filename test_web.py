@@ -1099,7 +1099,7 @@ def main():
           "天翼按钮用天翼挂载目录" not in html
           and "目标目录(不填:天翼用设置里的挂载目录,移动用默认目录)" in html, "")
     check("选目录按 CAS 类型拦截错云标签(v2.15.0)",
-          "if(w && pickerTarget==='target189')" in html, "")
+          "if(w && (pickerTarget==='target189'||pickerTarget==='inboxsave'))" in html, "")
 
     # tt) 记住上次目录(v2.14.0):/api/lastdir 写入,设置接口透出,分云互不覆盖
     st, d, _ = req("POST", base + "/api/lastdir",
@@ -1136,7 +1136,7 @@ def main():
     # xx) 类型警告只限还原选目录,扫描/设置选目录不受还原区 CAS 影响(v2.16.2)
     html = cw2.INDEX_HTML
     check("类型警告限定还原上下文",
-          "pickerTarget==='target189'? casWarnFor(c)" in html, "")
+          "(pickerTarget==='target189'||pickerTarget==='inboxsave')? casWarnFor(c)" in html, "")
 
     # yy) Telegram 收件箱(v2.17.0):白名单接收、去重、删除;不影响既有功能
     mock_tg = serve(MockTG)
@@ -1175,6 +1175,40 @@ def main():
     html = cw2.INDEX_HTML
     check("收件箱前端齐备", 'id="tab-inbox"' in html
           and "pushInboxToRestore" in html and 'id="cfgtg"' in html, "")
+
+    # zz) 收件箱另存到网盘(v2.18.0):类型校验与还原一致,保存后回查
+    ty_raw = ct.encode_cas({"name": "待删源文件.mkv", "size": 12345,
+                            "md5": "A" * 32, "sliceMd5": "B" * 32,
+                            "sha256": "", "recover_pass": "",
+                            "create_time": 1700000000})
+    mb_raw = ct.encode_cas({"name": "样本.mkv", "size": 12345,
+                            "md5": "", "sliceMd5": "",
+                            "sha256": "c" * 64, "recover_pass": "",
+                            "create_time": 1700000000})
+    st_ty, it_ty = cas_web.inbox_add("待删源文件.mkv.cas", ty_raw)
+    st_mb, it_mb = cas_web.inbox_add("样本.cas", mb_raw)
+    check("另存测试 CAS 已入收件箱", st_ty == "added" and st_mb == "added",
+          (st_ty, st_mb))
+    n_put = len(captured["put"])
+    st, d, _ = req("POST", base + "/api/inbox/save",
+                   {"id": it_ty["id"], "cloud": "189", "dir": "/删除测试"})
+    check("天翼 CAS 另存到天翼目录", d["ok"], d)
+    check("另存走 fs/put 且路径正确",
+          len(captured["put"]) == n_put + 1
+          and urllib.parse.unquote(captured["put"][-1][0])
+          == "/删除测试/待删源文件.mkv.cas", captured["put"][-1:])
+    st, d, _ = req("POST", base + "/api/inbox/save",
+                   {"id": it_ty["id"], "cloud": "139", "parent": "D1"})
+    check("天翼 CAS 禁止存移动", not d["ok"] and "移动" in d["msg"], d)
+    st, d, _ = req("POST", base + "/api/inbox/save",
+                   {"id": it_mb["id"], "cloud": "189", "dir": "/删除测试"})
+    check("移动 CAS 禁止存天翼", not d["ok"] and "天翼" in d["msg"], d)
+    st, d, _ = req("POST", base + "/api/inbox/save",
+                   {"id": it_mb["id"], "cloud": "139", "parent": "D1"})
+    check("移动 CAS 另存到移动目录", d["ok"], d)
+    html = cw2.INDEX_HTML
+    check("另存前端齐备", "openInboxSave" in html and "另存到网盘" in html
+          and "/api/inbox/save" in html, "")
 
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
