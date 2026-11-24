@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.18.0"
+VERSION = "2.19.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -831,7 +831,8 @@ SETTINGS_KEYS = ("tianyi_home", "mobile_home", "openlist_url", "openlist_token",
                  "mobile_home_id", "mobile_home_name", "tianyi_access",
                  "tianyi_session_key",
                  "last_target189", "last_parent139", "last_parent139_name",
-                 "last_cloud", "tg_bot_token", "tg_allow_id", "tg_offset")
+                 "last_cloud", "tg_bot_token", "tg_allow_id", "tg_offset",
+                 "tianyi_enabled", "mobile_enabled")
 PATH_KEYS = ("tianyi_paths", "mobile_paths")
 
 
@@ -950,6 +951,12 @@ def update_settings(body):
         cur["tg_bot_token"] = ""
     if "tg_allow_id" in body:
         cur["tg_allow_id"] = str(body.get("tg_allow_id") or "").strip()
+    if "tianyi_enabled" in body:
+        cur["tianyi_enabled"] = "1" if body.get("tianyi_enabled") else "0"
+    if "mobile_enabled" in body:
+        cur["mobile_enabled"] = "1" if body.get("mobile_enabled") else "0"
+    if cur.get("tianyi_enabled") == "0" and cur.get("mobile_enabled") == "0":
+        raise ValueError("天翼云盘与移动云盘不能同时停用,至少启用一个")
     if "cas139_user" in body:
         cur["cas139_user"] = str(body.get("cas139_user") or "").strip()
     if "tianyi_access" in body:
@@ -1057,6 +1064,8 @@ def public_settings(s=None):
             "web_password_set": bool(s["web_pw_hash"] or WEB_PASSWORD),
             "tg_bot_token_set": bool(s.get("tg_bot_token")),
             "tg_allow_id": s.get("tg_allow_id") or "",
+            "tianyi_enabled": s.get("tianyi_enabled") != "0",
+            "mobile_enabled": s.get("mobile_enabled") != "0",
             "tianyi_session_key_set": bool(s["tianyi_session_key"])}
 
 
@@ -1793,6 +1802,7 @@ button:disabled{opacity:.35}
 
 <div id="tab-settings" style="display:none">
 <div class="card"><h2>☁️ 天翼云盘</h2>
+<label class="mut"><input type="checkbox" id="cfgen189" style="width:auto" checked> <b>启用天翼云盘</b>(停用后,各页面隐藏天翼相关选项,顶部状态显示未启用)</label>
 <div class="mut">密钥类留空 = 不修改,不回显明文。</div>
 <label class="mut">接入方式</label>
 <select id="cfgaccess"><option value="openlist">OpenList</option><option value="direct" disabled>直连(开发中)</option></select>
@@ -1815,6 +1825,7 @@ button:disabled{opacity:.35}
 <button class="small grey" onclick="togglePicker('append:paths189')">📁 添加一个目录</button>
 </div>
 <div class="card"><h2>📱 移动云盘</h2>
+<label class="mut"><input type="checkbox" id="cfgen139" style="width:auto" checked> <b>启用移动云盘</b>(停用后,各页面隐藏移动相关选项,顶部状态显示未启用)</label>
 <div class="mut">接入方式:<b>直连 139 接口</b>,不经 OpenList。</div>
 <label class="mut">移动云盘手机号(可不填,AUTH 为完整形式时用不到)</label>
 <input id="cfgphone" placeholder="手机号">
@@ -1868,14 +1879,24 @@ async function api(url, body){
   return d;
 }
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function cloudOn(c){ return c==='189'? SETTINGS.tianyi_enabled!==false : SETTINGS.mobile_enabled!==false; }
+function applyCloudVisibility(){
+  const ty=cloudOn('189'), mb=cloudOn('139');
+  if($('btnTy')) $('btnTy').style.display=ty?'':'none';
+  if($('btnMb')) $('btnMb').style.display=mb?'':'none';
+  if($('srcOl')) $('srcOl').style.display=ty?'':'none';
+  if($('src139')) $('src139').style.display=mb?'':'none';
+  if(!ty && browseSrc==='ol') setBrowseSrc('139');
+  if(!mb && browseSrc==='139') setBrowseSrc('ol');
+}
 async function status(){
   const d = await api('/api/status');
   if(!d.ok){ $('status').innerHTML='<span class=err>'+esc(d.msg)+'</span>'; return; }
   const s=d.data; $('ver').textContent='v'+s.version;
   const tmode = s.tianyi_access==='direct'? '直连' : 'OpenList';
   $('status').innerHTML =
-    (s.openlist_configured? (s.openlist_ok? '🟢 天翼云盘 '+tmode+' '+esc(s.openlist_msg) : '🔴 天翼云盘 '+tmode+' 未连通: '+esc(s.openlist_msg)) : '🔴 天翼云盘未配置(设置页天翼云盘区填 OpenList 地址 / Token)')
-    +'<br>'+(s.m139_configured? (s.m139_ok? '🟢 移动直连已连通' : '🔴 移动直连未通: '+esc(s.m139_msg||'')) : '🟡 未配置移动凭据(设置页可填;移动还原不可用,天翼不受影响)');
+    (!cloudOn('189')? '🔴 天翼云盘 未启用' : (s.openlist_configured? (s.openlist_ok? '🟢 天翼云盘 '+tmode+' '+esc(s.openlist_msg) : '🔴 天翼云盘 '+tmode+' 未连通: '+esc(s.openlist_msg)) : '🔴 天翼云盘未配置(设置页天翼云盘区填 OpenList 地址 / Token)'))
+    +'<br>'+(!cloudOn('139')? '🔴 移动云盘 未启用' : (s.m139_configured? (s.m139_ok? '🟢 移动直连已连通' : '🔴 移动直连未通: '+esc(s.m139_msg||'')) : '🟡 未配置移动凭据(设置页可填;移动还原不可用,天翼不受影响)'));
 }
 function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader();
   r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file);});}
@@ -1887,6 +1908,8 @@ function isMixed(){
   return a&&b;
 }
 function applyMixSelection(side){
+  if(side==='ty' && !cloudOn('189')) side='mb';
+  if(side==='mb' && !cloudOn('139')) side='ty';
   mixSide=side;
   batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); if(!c||!it.info) return; const cl=itemCloud(it);
     c.checked = cl==='both'? true : (side==='ty'? cl==='189' : cl==='139'); });
@@ -1936,7 +1959,7 @@ function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk
 function renderBatch(){
   const mixed = isMixed();
   const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto" checked onchange="batchAll(this.checked)"'+(mixed?' disabled':'')+'> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(取消勾选的不会还原)</span>'
-    +(mixed? ' <button class="small grey" onclick="applyMixSelection(\'ty\')">全选天翼</button> <button class="small grey" onclick="applyMixSelection(\'mb\')">全选移动</button> <span class=mut>含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
+    +(mixed? (cloudOn('189')? ' <button class="small grey" onclick="applyMixSelection(\'ty\')">全选天翼</button>' : '')+(cloudOn('139')? ' <button class="small grey" onclick="applyMixSelection(\'mb\')">全选移动</button>' : '')+' <span class=mut>含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
   $('inspect').innerHTML = head + batchItems.map((it,i)=>
     it.info? '<div><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto" checked onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
       ' <button class="small grey" onclick="renameStart('+i+')">重命名</button>'+
@@ -2139,7 +2162,7 @@ function renderInbox(){
   $('inboxbtns').style.display = inboxItems.length? 'block':'none';
   $('inboxlist').innerHTML = inboxItems.length? inboxItems.map((it,i)=>
     '<div><label><input type="checkbox" class="inboxchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span>'+
-    '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span> <button class="small" onclick="openInboxSave('+i+')">另存到网盘</button></div>').join('')
+    '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span>'+(((itemCloud(it)==='189'&&!cloudOn('189'))||(itemCloud(it)==='139'&&!cloudOn('139')))? '' : ' <button class="small" onclick="openInboxSave('+i+')">另存到网盘</button>')+'</div>').join('')
     : '<div class="mut" style="padding:8px 2px">收件箱为空。在 Telegram 里把 .cas 文件发给机器人即可存入(需先在设置里配置机器人)。</div>';
 }
 function inboxCheckAll(v){ document.querySelectorAll('.inboxchk').forEach(c=>{ c.checked=v; }); }
@@ -2189,6 +2212,7 @@ function openInboxSave(i){
   }
   $('ph189').style.display=pickerScope? 'none':'';
   $('picker').style.display='flex';
+  syncPickerTabs();
   showPickerCloud(pickerCloud);
   if(pickerCloud==='139' && p139Stack.length===1 && p139Stack[0].name.indexOf('/')>=0){
     const pid0=p139Stack[0].id, nm0=p139Stack[0].name;
@@ -2290,6 +2314,9 @@ async function loadSettings(){
   $('cfgtg').value = SETTINGS.tg_bot_token_set? MASK : '';
   $('tgstate').textContent = SETTINGS.tg_bot_token_set? '(已设置)' : '(未设置)';
   $('cfgtgid').value=SETTINGS.tg_allow_id||'';
+  $('cfgen189').checked = SETTINGS.tianyi_enabled!==false;
+  $('cfgen139').checked = SETTINGS.mobile_enabled!==false;
+  applyCloudVisibility(); status();
   $('tokstate').textContent = SETTINGS.openlist_token_set? '(已设置'+(SETTINGS.openlist_token_source? ' · 来自'+SETTINGS.openlist_token_source : '')+')' : '(未设置)';
   $('authstate').textContent = SETTINGS.cas139_auth_set? '(已设置'+(SETTINGS.cas139_auth_expiry? ' · 授权到期 '+SETTINGS.cas139_auth_expiry : '')+')' : '(未设置)';
   loadList();
@@ -2309,6 +2336,7 @@ async function saveSettings(){
     cas139_mail_cookies:secVal('cfgcookies'), cas139_sms_code:secVal('cfgsms'),
     tg_bot_token:secVal('cfgtg'), clear_tg_bot_token:$('cfgtgclear').checked,
     tg_allow_id:$('cfgtgid').value.trim(),
+    tianyi_enabled:$('cfgen189').checked, mobile_enabled:$('cfgen139').checked,
     clear_cas139_pass:$('cfgpassclear').checked, clear_cas139_mail_cookies:$('cfgcookclear').checked};
   const d = await api('/api/settings', body);
   $('setmsg').innerHTML = d.ok? '<span class=good>已保存</span>' : '<span class=err>'+esc(d.msg)+'</span>';
@@ -2418,6 +2446,7 @@ function togglePicker(targetId){
       }
     }
     $('ph189').style.display = pickerScope? 'none':'';
+    syncPickerTabs();
     showPickerCloud(pickerCloud);
     if(pickerCloud==='139' && p139Stack.length===1 && p139Stack[0].name.indexOf('/')>=0){
       const pid0=p139Stack[0].id, nm0=p139Stack[0].name;
@@ -2426,7 +2455,13 @@ function togglePicker(targetId){
   }
   p.style.display=show?'flex':'none';
 }
+function syncPickerTabs(){
+  const gated = pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave';
+  $('ptab189').style.display = (gated && !cloudOn('189'))? 'none':'';
+  $('ptab139').style.display = (gated && !cloudOn('139'))? 'none':'';
+}
 function showPickerCloud(c){
+  if((pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave') && !cloudOn(c)) c = c==='189'? '139':'189';
   let w=(pickerTarget==='target189'||pickerTarget==='inboxsave')? casWarnFor(c) : '';
   if(w && (pickerTarget==='target189'||pickerTarget==='inboxsave')){
     const other=c==='139'? '189':'139';
@@ -2720,6 +2755,8 @@ async function doRestore(to){
 let browseSrc='ol';
 let m139Stack=[], m139Items=[], genSel139=new Set();
 function setBrowseSrc(s){
+  if(s==='ol' && !cloudOn('189')) s='139';
+  if(s==='139' && !cloudOn('139')) s='ol';
   browseSrc=s;
   $('olbrowse').style.display = s==='ol'? '' : 'none';
   $('m139browse').style.display = s==='139'? '' : 'none';

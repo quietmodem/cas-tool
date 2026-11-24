@@ -1210,6 +1210,26 @@ def main():
     check("另存前端齐备", "openInboxSave" in html and "另存到网盘" in html
           and "/api/inbox/save" in html, "")
 
+    # aaa) 双云启用开关(v2.19.0):默认全开,可单独停用,禁止同时停用
+    st, d, _ = req("GET", base + "/api/settings")
+    check("启用开关默认全开", d["data"]["tianyi_enabled"] is True
+          and d["data"]["mobile_enabled"] is True, d["data"])
+    st, d, _ = req("POST", base + "/api/settings", {"tianyi_enabled": False})
+    check("可单独停用天翼", d["ok"] and d["data"]["tianyi_enabled"] is False
+          and d["data"]["mobile_enabled"] is True, d)
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"tianyi_enabled": False, "mobile_enabled": False})
+    check("禁止同时停用两云", not d["ok"] and "至少启用一个" in d["msg"], d)
+    st, d, _ = req("GET", base + "/api/settings")
+    check("同时停用被拦后设置未变", d["data"]["tianyi_enabled"] is False
+          and d["data"]["mobile_enabled"] is True, d["data"])
+    st, d, _ = req("POST", base + "/api/settings", {"tianyi_enabled": True})
+    check("可重新启用天翼", d["ok"] and d["data"]["tianyi_enabled"] is True, d)
+    html = cw2.INDEX_HTML
+    check("启用开关前端齐备", 'id="cfgen189"' in html and 'id="cfgen139"' in html
+          and "applyCloudVisibility" in html and "未启用" in html
+          and "cloudOn" in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),
