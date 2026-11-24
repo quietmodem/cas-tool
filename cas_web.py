@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.23.0"
+VERSION = "2.24.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -2017,13 +2017,26 @@ function clearRestore(){
   refreshBtns();
 }
 let batchKw='';
-function applyBatchFilter(){ applyListFilter($('inspect'), $('batchfilter'), $('batchcount')); }
-function batchAll(v){ if(isMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ if(!v || rowVisible(c)){ c.checked = v; const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=v; } }); refreshBtns(); syncTargetToKinds(); }
+function batchVisMixed(){
+  let a=false,b=false;
+  batchItems.forEach((it,i)=>{ const c=document.querySelector('.itchk[data-i="'+i+'"]'); if(!c || !rowVisible(c)) return; const cl=itemCloud(it); if(cl==='189') a=true; else if(cl==='139') b=true; });
+  return a&&b;
+}
+function updateBatchHead(){
+  const vm=batchVisMixed();
+  const b=$('batchall'); if(b) b.disabled=vm;
+  const t=$('mixTy'), m=$('mixMb'), n=$('mixNote');
+  if(t) t.style.display=(vm && cloudOn('189'))? '' : 'none';
+  if(m) m.style.display=(vm && cloudOn('139'))? '' : 'none';
+  if(n) n.style.display=vm? '' : 'none';
+}
+function applyBatchFilter(){ applyListFilter($('inspect'), $('batchfilter'), $('batchcount')); updateBatchHead(); }
+function batchAll(v){ if(batchVisMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ if(!v || rowVisible(c)){ c.checked = v; const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=v; } }); refreshBtns(); syncTargetToKinds(); }
 function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); cs.forEach(c=>{ const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=c.checked; }); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); syncTargetToKinds(); }
 function renderBatch(){
   const mixed = isMixed();
   const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto"'+(batchItems.every(it=>it.checked)? ' checked':'')+' onchange="batchAll(this.checked)"'+(mixed?' disabled':'')+'> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(仅还原已勾选的)</span>'
-    +(mixed? (cloudOn('189')? ' <button class="small grey" onclick="applyMixSelection(\'ty\')">全选天翼</button>' : '')+(cloudOn('139')? ' <button class="small grey" onclick="applyMixSelection(\'mb\')">全选移动</button>' : '')+' <span class=mut>含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
+    +(mixed? (cloudOn('189')? ' <button class="small grey" id="mixTy" onclick="applyMixSelection(\'ty\')">全选天翼</button>' : '')+(cloudOn('139')? ' <button class="small grey" id="mixMb" onclick="applyMixSelection(\'mb\')">全选移动</button>' : '')+' <span class=mut id="mixNote">含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
   const filterRow = batchItems.length? '<div class="row" style="margin:6px 0"><input id="batchfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" value="'+esc(batchKw)+'" oninput="batchKw=this.value;applyBatchFilter()"><button class="small grey" onclick="batchKw=\'\';renderBatch()">清除</button><span class="mut" id="batchcount"></span></div>' : '';
   $('inspect').innerHTML = head + filterRow + batchItems.map((it,i)=>
     it.info? '<div data-kw="'+esc(it.info.name+' '+(it.src||''))+'"><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto"'+(it.checked? ' checked':'')+' onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
@@ -2229,29 +2242,38 @@ function inboxMixed(){
   for(const it of inboxItems){ const c=itemCloud(it); if(c==='189') a=true; else if(c==='139') b=true; }
   return a&&b;
 }
+function inboxVisMixed(){
+  let a=false,b=false;
+  inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(!c || !rowVisible(c)) return; const cl=itemCloud(it); if(cl==='189') a=true; else if(cl==='139') b=true; });
+  return a&&b;
+}
+function renderInboxSelRow(){
+  const el=$('inboxselrow'); if(!el) return;
+  if(!inboxItems.length){ el.innerHTML=''; return; }
+  const mixed=inboxVisMixed();
+  el.innerHTML = mixed?
+    '<button class="small grey" disabled>全选</button>'
+    +(cloudOn('189')? '<button class="small grey" onclick="applyInboxSelection(\'ty\')">全选天翼</button>' : '')
+    +(cloudOn('139')? '<button class="small grey" onclick="applyInboxSelection(\'mb\')">全选移动</button>' : '')
+    +'<button class="small grey" onclick="inboxCheckAll(false)">全不选</button> <span class=mut>含天翼版与移动版 CAS,须分开另存</span>'
+    : '<button class="small grey" onclick="inboxCheckAll(true)">全选</button><button class="small grey" onclick="inboxCheckAll(false)">全不选</button>';
+}
 function applyInboxSelection(side){
   if(side==='ty' && !cloudOn('189')) side='mb';
   if(side==='mb' && !cloudOn('139')) side='ty';
   inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(!c) return; if(!rowVisible(c)) return; const cl=itemCloud(it);
     c.checked = cl==='both'? true : (side==='ty'? cl==='189' : cl==='139'); });
 }
-function applyInboxFilter(){ applyListFilter($('inboxlist'), $('inboxfilter'), $('inboxcount')); }
+function applyInboxFilter(){ applyListFilter($('inboxlist'), $('inboxfilter'), $('inboxcount')); renderInboxSelRow(); }
 function renderInbox(){
   $('inboxbtns').style.display = inboxItems.length? 'block':'none';
-  const mixed=inboxMixed();
-  $('inboxselrow').innerHTML = !inboxItems.length? '' : mixed?
-    '<button class="small grey" disabled>全选</button>'
-    +(cloudOn('189')? '<button class="small grey" onclick="applyInboxSelection(\'ty\')">全选天翼</button>' : '')
-    +(cloudOn('139')? '<button class="small grey" onclick="applyInboxSelection(\'mb\')">全选移动</button>' : '')
-    +'<button class="small grey" onclick="inboxCheckAll(false)">全不选</button> <span class=mut>含天翼版与移动版 CAS,须分开另存</span>'
-    : '<button class="small grey" onclick="inboxCheckAll(true)">全选</button><button class="small grey" onclick="inboxCheckAll(false)">全不选</button>';
   $('inboxlist').innerHTML = inboxItems.length? inboxItems.map((it,i)=>
     '<div data-kw="'+esc(it.info.name+' '+(it.name||''))+'"><label><input type="checkbox" class="inboxchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span>'+
     '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span> <button class="small green" onclick="pushOneInbox('+i+')">推送还原区</button>'+(((itemCloud(it)==='189'&&!cloudOn('189'))||(itemCloud(it)==='139'&&!cloudOn('139')))? '' : ' <button class="small" onclick="openInboxSave('+i+')">另存到网盘</button>')+'</div>').join('')
     : '<div class="mut" style="padding:8px 2px">收件箱为空。在 Telegram 里把 .cas 文件发给机器人即可存入(需先在设置里配置机器人)。</div>';
   applyInboxFilter();
 }
-function inboxCheckAll(v){ if(v && inboxMixed()) return; document.querySelectorAll('.inboxchk').forEach(c=>{ if(v && !rowVisible(c)) return; c.checked=v; }); }
+function inboxCheckAll(v){ if(v && inboxVisMixed()) return; document.querySelectorAll('.inboxchk').forEach(c=>{ if(v && !rowVisible(c)) return; c.checked=v; }); }
 function pickedInbox(){ const out=[]; inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(c && c.checked) out.push(it); }); return out; }
 function pushOneInbox(i){
   const it=inboxItems[i]; if(!it) return;
