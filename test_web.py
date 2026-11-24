@@ -1099,7 +1099,7 @@ def main():
           "天翼按钮用天翼挂载目录" not in html
           and "目标目录(不填:天翼用设置里的挂载目录,移动用默认目录)" in html, "")
     check("选目录按 CAS 类型拦截错云标签(v2.15.0)",
-          "if(w && (pickerTarget==='target189'||pickerTarget==='inboxsave'))" in html, "")
+          "if(w && (pickerTarget==='target189'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch'))" in html, "")
 
     # tt) 记住上次目录(v2.14.0):/api/lastdir 写入,设置接口透出,分云互不覆盖
     st, d, _ = req("POST", base + "/api/lastdir",
@@ -1136,7 +1136,7 @@ def main():
     # xx) 类型警告只限还原选目录,扫描/设置选目录不受还原区 CAS 影响(v2.16.2)
     html = cw2.INDEX_HTML
     check("类型警告限定还原上下文",
-          "(pickerTarget==='target189'||pickerTarget==='inboxsave')? casWarnFor(c)" in html, "")
+          "(pickerTarget==='target189'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch')? casWarnFor(c)" in html, "")
 
     # yy) Telegram 收件箱(v2.17.0):白名单接收、去重、删除;不影响既有功能
     mock_tg = serve(MockTG)
@@ -1231,6 +1231,13 @@ def main():
           and "applyCloudVisibility" in html and "未启用" in html
           and "cloudOn" in html and 'id="nb-restore"' in html
           and 'id="nb-inbox"' in html, "")
+
+    # bbb) 收件箱批量另存(v2.20.0):混合时分组全选,选目录只开一次
+    html = cw2.INDEX_HTML
+    check("批量另存前端齐备", "openInboxBatchSave" in html
+          and "doInboxBatchSave" in html and "批量另存到网盘" in html
+          and "applyInboxSelection" in html and "inboxMixed" in html
+          and "pickerTarget==='inboxbatch'" in html, "")
 
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",

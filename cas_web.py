@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.19.1"
+VERSION = "2.20.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1795,11 +1795,11 @@ button:disabled{opacity:.35}
 <div id="inboxmsg" class="msg"></div>
 <div id="inboxlist"></div>
 <div id="inboxbtns" style="display:none">
-<div class="row"><button class="small grey" onclick="inboxCheckAll(true)">全选</button>
-<button class="small grey" onclick="inboxCheckAll(false)">全不选</button></div>
+<div class="row" id="inboxselrow"></div>
 <div class="row"><button class="green" onclick="pushInboxToRestore()">⬆ 推送到还原区</button>
 <button class="grey" onclick="downloadInboxZip()">⬇ 打包下载所选</button>
 <button class="grey" onclick="deleteInboxSel()">删除所选</button></div>
+<div class="row"><button onclick="openInboxBatchSave()">批量另存到网盘</button></div>
 </div>
 </div></div>
 
@@ -2167,15 +2167,34 @@ async function loadInbox(){
   const d=await api('/api/inbox');
   inboxItems = d.ok? (d.data||[]) : [];
   renderInbox();
+  if(inboxMixed()) applyInboxSelection('ty');
+}
+function inboxMixed(){
+  let a=false,b=false;
+  for(const it of inboxItems){ const c=itemCloud(it); if(c==='189') a=true; else if(c==='139') b=true; }
+  return a&&b;
+}
+function applyInboxSelection(side){
+  if(side==='ty' && !cloudOn('189')) side='mb';
+  if(side==='mb' && !cloudOn('139')) side='ty';
+  inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(!c) return; const cl=itemCloud(it);
+    c.checked = cl==='both'? true : (side==='ty'? cl==='189' : cl==='139'); });
 }
 function renderInbox(){
   $('inboxbtns').style.display = inboxItems.length? 'block':'none';
+  const mixed=inboxMixed();
+  $('inboxselrow').innerHTML = !inboxItems.length? '' : mixed?
+    '<button class="small grey" disabled>全选</button>'
+    +(cloudOn('189')? '<button class="small grey" onclick="applyInboxSelection(\'ty\')">全选天翼</button>' : '')
+    +(cloudOn('139')? '<button class="small grey" onclick="applyInboxSelection(\'mb\')">全选移动</button>' : '')
+    +'<button class="small grey" onclick="inboxCheckAll(false)">全不选</button> <span class=mut>含天翼版与移动版 CAS,须分开另存</span>'
+    : '<button class="small grey" onclick="inboxCheckAll(true)">全选</button><button class="small grey" onclick="inboxCheckAll(false)">全不选</button>';
   $('inboxlist').innerHTML = inboxItems.length? inboxItems.map((it,i)=>
     '<div><label><input type="checkbox" class="inboxchk" data-i="'+i+'" style="width:auto"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span>'+
     '<br><span class=kv>来源: Telegram · '+esc(it.time||'')+'</span>'+(((itemCloud(it)==='189'&&!cloudOn('189'))||(itemCloud(it)==='139'&&!cloudOn('139')))? '' : ' <button class="small" onclick="openInboxSave('+i+')">另存到网盘</button>')+'</div>').join('')
     : '<div class="mut" style="padding:8px 2px">收件箱为空。在 Telegram 里把 .cas 文件发给机器人即可存入(需先在设置里配置机器人)。</div>';
 }
-function inboxCheckAll(v){ document.querySelectorAll('.inboxchk').forEach(c=>{ c.checked=v; }); }
+function inboxCheckAll(v){ if(v && inboxMixed()) return; document.querySelectorAll('.inboxchk').forEach(c=>{ c.checked=v; }); }
 function pickedInbox(){ const out=[]; inboxItems.forEach((it,i)=>{ const c=document.querySelector('.inboxchk[data-i="'+i+'"]'); if(c && c.checked) out.push(it); }); return out; }
 function pushInboxToRestore(){
   const picked=pickedInbox();
@@ -2196,14 +2215,11 @@ function pushInboxToRestore(){
   window.scrollTo({top:0, behavior:'smooth'});
 }
 let inboxSaveIdx=-1;
-function openInboxSave(i){
-  inboxSaveIdx=i;
-  const it=inboxItems[i]; if(!it) return;
-  pickerTarget='inboxsave';
+function seedPicker(cloud){
   $('pickercloudtabs').style.display='';
   const roots=tianyiRoots().map((p,j)=>({label: j===0? '☁️ 天翼云盘' : '☁️ 天翼目录', path:p}));
   pickerScope=roots.length? {roots:roots, base:''} : null;
-  if(itemCloud(it)==='139'){
+  if(cloud==='139'){
     pickerCloud='139';
     const pid=SETTINGS.last_parent139||'';
     const d0=(SETTINGS.mobile_dirs||[]).find(d=>d.id===pid);
@@ -2228,6 +2244,36 @@ function openInboxSave(i){
     const pid0=p139Stack[0].id, nm0=p139Stack[0].name;
     seed139Stack(pid0, nm0).then(st=>{ if(st.length>1 && $('picker').style.display!=='none' && pickerCloud==='139'){ p139Stack=st; load139Pane(); } });
   }
+}
+function openInboxSave(i){
+  inboxSaveIdx=i;
+  const it=inboxItems[i]; if(!it) return;
+  pickerTarget='inboxsave';
+  seedPicker(itemCloud(it)==='139'? '139':'189');
+}
+function openInboxBatchSave(){
+  const picked=pickedInbox();
+  if(!picked.length){ alert('请先勾选要另存的 CAS'); return; }
+  let hasTy=false, hasMb=false;
+  for(const it of picked){ const cl=itemCloud(it); if(cl==='189') hasTy=true; else if(cl==='139') hasMb=true; }
+  if(hasTy && hasMb){ alert('天翼版与移动版 CAS 不能同时另存,请用「全选天翼」或「全选移动」分开另存'); return; }
+  if(hasTy && !cloudOn('189')){ alert('天翼云盘未启用'); return; }
+  if(hasMb && !cloudOn('139')){ alert('移动云盘未启用'); return; }
+  pickerTarget='inboxbatch';
+  seedPicker(hasMb? '139':'189');
+}
+async function doInboxBatchSave(cloud, target){
+  const picked=pickedInbox();
+  if(!picked.length) return;
+  $('inboxmsg').innerHTML='<span class=mut>正在批量另存,共 '+picked.length+' 份…</span>';
+  let okN=0; const fails=[];
+  for(const it of picked){
+    const body = cloud==='139'? {id:it.id, cloud:'139', parent:target} : {id:it.id, cloud:'189', dir:target};
+    const d=await api('/api/inbox/save', body);
+    if(d.ok) okN++; else fails.push((it.info.name||it.name)+':'+(d.msg||'失败'));
+  }
+  $('inboxmsg').innerHTML='<span class=good>批量另存完成:成功 '+okN+' 份</span>'
+    +(fails.length? '<br><span class=err>失败 '+fails.length+' 份:'+esc(fails.join(';'))+'</span>' : '');
 }
 async function doInboxSave(cloud, target){
   const it=inboxItems[inboxSaveIdx]; if(!it) return;
@@ -2363,6 +2409,9 @@ function casWarnFor(cloud){
   if(pickerTarget==='inboxsave' && inboxSaveIdx>=0 && inboxItems[inboxSaveIdx]){
     const c=itemCloud(inboxItems[inboxSaveIdx]);
     s=new Set(c? [c] : []);
+  } else if(pickerTarget==='inboxbatch'){
+    s=new Set();
+    for(const it of pickedInbox()){ const c=itemCloud(it); if(c) s.add(c); }
   } else s=checkedKinds();
   if(!s.size) return '';
   if(cloud==='139' && !s.has('139') && !s.has('both')) return '所选 cas 为天翼版,仅可还原到天翼云盘';
@@ -2466,14 +2515,14 @@ function togglePicker(targetId){
   p.style.display=show?'flex':'none';
 }
 function syncPickerTabs(){
-  const gated = pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave';
+  const gated = pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch';
   $('ptab189').style.display = (gated && !cloudOn('189'))? 'none':'';
   $('ptab139').style.display = (gated && !cloudOn('139'))? 'none':'';
 }
 function showPickerCloud(c){
-  if((pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave') && !cloudOn(c)) c = c==='189'? '139':'189';
-  let w=(pickerTarget==='target189'||pickerTarget==='inboxsave')? casWarnFor(c) : '';
-  if(w && (pickerTarget==='target189'||pickerTarget==='inboxsave')){
+  if((pickerTarget==='target189'||pickerTarget==='scanpath'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch') && !cloudOn(c)) c = c==='189'? '139':'189';
+  let w=(pickerTarget==='target189'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch')? casWarnFor(c) : '';
+  if(w && (pickerTarget==='target189'||pickerTarget==='inboxsave'||pickerTarget==='inboxbatch')){
     const other=c==='139'? '189':'139';
     if(!casWarnFor(other)){ alert('⚠ '+w); c=other; w=''; }
   }
@@ -2545,6 +2594,7 @@ function pickerUp(){
 function pickerHome(which){ const v=SETTINGS.tianyi_home; if(v){ pickerGo(v); } else alert('未设置挂载目录,请先在「设置」页配置'); }
 function pickerPick(p){
   if(pickerTarget==='inboxsave'){ $('picker').style.display='none'; doInboxSave('189', p); return; }
+  if(pickerTarget==='inboxbatch'){ $('picker').style.display='none'; doInboxBatchSave('189', p); return; }
   if(pickerTarget.indexOf('append:')===0){
     const ta=$(pickerTarget.slice(7));
     const lines=ta.value.split('\n').map(s=>s.trim()).filter(Boolean);
@@ -2628,6 +2678,7 @@ function pickerUse(){
     const cur=p139Stack[p139Stack.length-1];
     const nm=p139CurName();
     if(pickerTarget==='inboxsave'){ $('picker').style.display='none'; doInboxSave('139', cur.id); return; }
+    if(pickerTarget==='inboxbatch'){ $('picker').style.display='none'; doInboxBatchSave('139', cur.id); return; }
     if(pickerTarget==='target189'){ $('parent139').value=cur.id; picked139Path=nm; $('target189').value='移动云盘:'+nm; touched139=true; rememberLastDir('139', cur.id, nm); }
     else if(pickerTarget==='scanpath'){ scan139={id:cur.id,name:nm}; scanSrc='139'; $('scanpath').value='移动云盘:'+nm; }
     $('picker').style.display='none';
