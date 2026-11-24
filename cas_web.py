@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.19.0"
+VERSION = "2.19.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -955,8 +955,7 @@ def update_settings(body):
         cur["tianyi_enabled"] = "1" if body.get("tianyi_enabled") else "0"
     if "mobile_enabled" in body:
         cur["mobile_enabled"] = "1" if body.get("mobile_enabled") else "0"
-    if cur.get("tianyi_enabled") == "0" and cur.get("mobile_enabled") == "0":
-        raise ValueError("天翼云盘与移动云盘不能同时停用,至少启用一个")
+    # 两家同时停用是允许的:前端各选项卡会整体屏蔽并提示先启用(见 applyCloudVisibility)
     if "cas139_user" in body:
         cur["cas139_user"] = str(body.get("cas139_user") or "").strip()
     if "tianyi_access" in body:
@@ -1726,6 +1725,7 @@ button:disabled{opacity:.35}
 </div></div>
 
 <div id="tab-restore">
+<div class="card" id="nb-restore" style="display:none"><h2>未启用云盘</h2><div class="mut">天翼云盘与移动云盘均未启用,本页功能不可用。请先到「设置」页面启用至少一家云盘。</div></div>
 <div class="card"><h2>还原 CAS</h2>
 <input type="file" id="casfile" multiple hidden onchange="inspectCas()">
 <div id="dropzone" class="dropzone" onclick="$('casfile').click()">📥 把 .cas / .zip 拖到这里,或点击选择文件(可多选)</div>
@@ -1744,6 +1744,7 @@ button:disabled{opacity:.35}
 </div>
 
 <div id="tab-gen" style="display:none">
+<div class="card" id="nb-gen" style="display:none"><h2>未启用云盘</h2><div class="mut">天翼云盘与移动云盘均未启用,本页功能不可用。请先到「设置」页面启用至少一家云盘。</div></div>
 <div class="row"><button class="small grey" id="srcOl" onclick="setBrowseSrc('ol')">☁️ 天翼云盘</button>
 <button class="small grey" id="src139" onclick="setBrowseSrc('139')">📱 移动云盘(直连)</button></div>
 <div class="card" id="olbrowse"><h2>浏览网盘 · 生成 CAS</h2>
@@ -1767,6 +1768,7 @@ button:disabled{opacity:.35}
 </div>
 
 <div id="tab-scan" style="display:none">
+<div class="card" id="nb-scan" style="display:none"><h2>未启用云盘</h2><div class="mut">天翼云盘与移动云盘均未启用,本页功能不可用。请先到「设置」页面启用至少一家云盘。</div></div>
 <div class="card"><h2>🔍 扫描网盘CAS</h2>
 <div class="row"><input id="scanpath" class="grow" placeholder="要扫描的目录(选目录里可切换天翼/移动)" oninput="scanSrc='ol';scan139=null">
 <button class="small grey" onclick="togglePicker('scanpath')">📁 选目录</button>
@@ -1787,6 +1789,7 @@ button:disabled{opacity:.35}
 </div></div>
 
 <div id="tab-inbox" style="display:none">
+<div class="card" id="nb-inbox" style="display:none"><h2>未启用云盘</h2><div class="mut">天翼云盘与移动云盘均未启用,本页功能不可用。请先到「设置」页面启用至少一家云盘。</div></div>
 <div class="card"><h2>📥 收件箱</h2>
 <div class="mut">通过 Telegram 机器人发来的 CAS 文件存放在这里,与还原区互不影响;勾选后推送到还原区,再选目录还原。</div>
 <div id="inboxmsg" class="msg"></div>
@@ -1888,6 +1891,13 @@ function applyCloudVisibility(){
   if($('src139')) $('src139').style.display=mb?'':'none';
   if(!ty && browseSrc==='ol') setBrowseSrc('139');
   if(!mb && browseSrc==='139') setBrowseSrc('ol');
+  const bothOff=!ty && !mb;
+  for(const t of ['restore','gen','scan','inbox']){
+    const tab=$('tab-'+t); if(!tab) continue;
+    Array.from(tab.children).forEach(ch=>{ if(ch.id!==('nb-'+t)) ch.style.display=bothOff? 'none':''; });
+    const nb=$('nb-'+t); if(nb) nb.style.display=bothOff? '':'none';
+  }
+  if(!bothOff) setBrowseSrc(browseSrc);
 }
 async function status(){
   const d = await api('/api/status');

@@ -1219,16 +1219,18 @@ def main():
           and d["data"]["mobile_enabled"] is True, d)
     st, d, _ = req("POST", base + "/api/settings",
                    {"tianyi_enabled": False, "mobile_enabled": False})
-    check("禁止同时停用两云", not d["ok"] and "至少启用一个" in d["msg"], d)
-    st, d, _ = req("GET", base + "/api/settings")
-    check("同时停用被拦后设置未变", d["data"]["tianyi_enabled"] is False
-          and d["data"]["mobile_enabled"] is True, d["data"])
-    st, d, _ = req("POST", base + "/api/settings", {"tianyi_enabled": True})
-    check("可重新启用天翼", d["ok"] and d["data"]["tianyi_enabled"] is True, d)
+    check("允许同时停用两云(前端屏蔽各选项卡)", d["ok"]
+          and d["data"]["tianyi_enabled"] is False
+          and d["data"]["mobile_enabled"] is False, d)
+    st, d, _ = req("POST", base + "/api/settings",
+                   {"tianyi_enabled": True, "mobile_enabled": True})
+    check("可重新启用两云", d["ok"] and d["data"]["tianyi_enabled"] is True
+          and d["data"]["mobile_enabled"] is True, d)
     html = cw2.INDEX_HTML
     check("启用开关前端齐备", 'id="cfgen189"' in html and 'id="cfgen139"' in html
           and "applyCloudVisibility" in html and "未启用" in html
-          and "cloudOn" in html, "")
+          and "cloudOn" in html and 'id="nb-restore"' in html
+          and 'id="nb-inbox"' in html, "")
 
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
