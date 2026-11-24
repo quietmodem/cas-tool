@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.24.0"
+VERSION = "2.25.0"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -2024,19 +2024,21 @@ function batchVisMixed(){
 }
 function updateBatchHead(){
   const vm=batchVisMixed();
-  const b=$('batchall'); if(b) b.disabled=vm;
+  const b=$('selAllBtn'); if(b) b.disabled=vm;
   const t=$('mixTy'), m=$('mixMb'), n=$('mixNote');
   if(t) t.style.display=(vm && cloudOn('189'))? '' : 'none';
   if(m) m.style.display=(vm && cloudOn('139'))? '' : 'none';
   if(n) n.style.display=vm? '' : 'none';
 }
 function applyBatchFilter(){ applyListFilter($('inspect'), $('batchfilter'), $('batchcount')); updateBatchHead(); }
-function batchAll(v){ if(batchVisMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ if(!v || rowVisible(c)){ c.checked = v; const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=v; } }); refreshBtns(); syncTargetToKinds(); }
-function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); cs.forEach(c=>{ const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=c.checked; }); const b = $('batchall'); if(b && cs.length) b.checked = cs.every(c=>c.checked); refreshBtns(); syncTargetToKinds(); }
+function batchAll(v){ if(v && batchVisMixed()) return; document.querySelectorAll('.itchk').forEach(c=>{ if(!v || rowVisible(c)){ c.checked = v; const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=v; } }); refreshBtns(); syncTargetToKinds(); }
+function syncBatchAll(){ const cs = Array.from(document.querySelectorAll('.itchk')); cs.forEach(c=>{ const it=batchItems[Number(c.dataset.i)]; if(it) it.checked=c.checked; }); refreshBtns(); syncTargetToKinds(); }
 function renderBatch(){
   const mixed = isMixed();
-  const head = batchItems.length? '<div><label><input type="checkbox" id="batchall" style="width:auto"'+(batchItems.every(it=>it.checked)? ' checked':'')+' onchange="batchAll(this.checked)"'+(mixed?' disabled':'')+'> <b>全选</b></label> <span class=mut>共 '+batchItems.length+' 份 cas(仅还原已勾选的)</span>'
-    +(mixed? (cloudOn('189')? ' <button class="small grey" id="mixTy" onclick="applyMixSelection(\'ty\')">全选天翼</button>' : '')+(cloudOn('139')? ' <button class="small grey" id="mixMb" onclick="applyMixSelection(\'mb\')">全选移动</button>' : '')+' <span class=mut id="mixNote">含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
+  const head = batchItems.length? '<div><button class="small grey" id="selAllBtn" onclick="batchAll(true)"'+(mixed?' disabled':'')+'>全选</button> '
+    +(mixed? (cloudOn('189')? '<button class="small grey" id="mixTy" onclick="applyMixSelection(\'ty\')">全选天翼</button> ' : '')+(cloudOn('139')? '<button class="small grey" id="mixMb" onclick="applyMixSelection(\'mb\')">全选移动</button> ' : '') : '')
+    +'<button class="small grey" onclick="batchAll(false)">全不选</button> <span class=mut>共 '+batchItems.length+' 份 cas(仅还原已勾选的)</span>'
+    +(mixed? ' <span class=mut id="mixNote">含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
   const filterRow = batchItems.length? '<div class="row" style="margin:6px 0"><input id="batchfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" value="'+esc(batchKw)+'" oninput="batchKw=this.value;applyBatchFilter()"><button class="small grey" onclick="batchKw=\'\';renderBatch()">清除</button><span class="mut" id="batchcount"></span></div>' : '';
   $('inspect').innerHTML = head + filterRow + batchItems.map((it,i)=>
     it.info? '<div data-kw="'+esc(it.info.name+' '+(it.src||''))+'"><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto"'+(it.checked? ' checked':'')+' onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+

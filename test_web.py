@@ -487,9 +487,9 @@ def main():
           [b'id="paths189"', b"cloudPathSet", b"inCloud", b"itemCloud"])
           and b'id="paths139"' not in html)
     check("v1.10 还原只剩两个按钮,无 OL 按钮", all(x in html for x in
-          ["还原到天翼云盘".encode(), "还原到移动云盘".encode(), b"batchall", b"batchAll"])
+          ["还原到天翼云盘".encode(), "还原到移动云盘".encode(), b"selAllBtn", b"batchAll"])
           and "经 OpenList 还原".encode() not in html and "OL按钮".encode() not in html)
-    check("v1.10 批量列表有全选复选框", b'id="batchall"' in html and b"class=\"itchk\"" in html)
+    check("还原列表有全选/全不选按钮", b'id="selAllBtn"' in html and "batchAll(false)".encode() in html and b"class=\"itchk\"" in html)
 
     # b) 状态
     st, d, _ = req("GET", base + "/api/status")
@@ -1311,6 +1311,13 @@ def main():
     check("可见行混合判定齐备", "inboxVisMixed" in html
           and "batchVisMixed" in html and "renderInboxSelRow" in html
           and "updateBatchHead" in html and 'id="mixTy"' in html, "")
+
+    # hhh) 还原区全选/全不选按钮(v2.25.0)
+    html = cw2.INDEX_HTML
+    check("还原区按钮式全选齐备", 'id="selAllBtn"' in html
+          and 'onclick="batchAll(true)"' in html
+          and 'onclick="batchAll(false)"' in html
+          and 'id="batchall"' not in html, "")
 
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
