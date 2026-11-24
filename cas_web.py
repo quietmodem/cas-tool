@@ -39,7 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cas_tool as ct
 
-VERSION = "2.25.0"
+VERSION = "2.25.1"
 PORT = int(os.environ.get("PORT", "8099"))
 DATA_DIR = os.environ.get("CAS_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
@@ -1794,7 +1794,7 @@ button:disabled{opacity:.35}
 <div id="m139entries"></div>
 <div class="row"><button class="small grey" onclick="m139UpBtn()">⬆ 上级</button><button class="small grey" onclick="genMkdir('139')">＋ 新建目录</button></div></div>
 
-<div class="card"><h2>任务</h2><div class="row"><input id="jobfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" oninput="applyJobFilter()"><button class="small grey" onclick="$('jobfilter').value='';applyJobFilter()">清除</button><span class="mut" id="jobcount"></span></div><div id="jobs" class="mut">暂无</div><div id="jobsmsg" class="msg"></div></div>
+<div class="card"><h2>任务</h2><div class="row"><input id="jobfilter" class="grow" placeholder="输入关键字筛选,多个关键字用空格分隔,如:仙逆 S01E16" oninput="applyJobFilter()"><button class="small grey" onclick="$('jobfilter').value='';applyJobFilter()">清除</button><span class="mut" id="jobcount"></span></div><div id="jobs" class="mut">暂无</div><div id="jobsmsg" class="msg"></div></div>
 </div>
 
 <div id="tab-scan" style="display:none">
@@ -1805,7 +1805,7 @@ button:disabled{opacity:.35}
 <button class="small" onclick="scanCas()">开始扫描</button></div>
 <label class="mut"><input type="checkbox" id="scanrec" style="width:auto" checked> 包含子文件夹(递归最多 6 层,最多取 300 份)</label>
 <div id="scanmsg" class="msg"></div>
-<div class="row"><input id="scanfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" oninput="applyScanFilter()"><button class="small grey" onclick="$('scanfilter').value='';applyScanFilter()">清除</button><span class="mut" id="scancount"></span></div>
+<div class="row"><input id="scanfilter" class="grow" placeholder="输入关键字筛选,多个关键字用空格分隔,如:仙逆 S01E16" oninput="applyScanFilter()"><button class="small grey" onclick="$('scanfilter').value='';applyScanFilter()">清除</button><span class="mut" id="scancount"></span></div>
 <div id="scanlist"></div>
 <div id="scanbtns" style="display:none">
 <div class="row"><button class="small grey" onclick="scanCheckAllFull()">全选</button>
@@ -1824,7 +1824,7 @@ button:disabled{opacity:.35}
 <div class="card"><h2>📥 收件箱</h2>
 <div class="mut">通过 Telegram 机器人发来的 CAS 文件存放在这里,与还原区互不影响;勾选后推送到还原区,再选目录还原。</div>
 <div id="inboxmsg" class="msg"></div>
-<div class="row"><input id="inboxfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" oninput="applyInboxFilter()"><button class="small grey" onclick="$('inboxfilter').value='';applyInboxFilter()">清除</button><span class="mut" id="inboxcount"></span></div>
+<div class="row"><input id="inboxfilter" class="grow" placeholder="输入关键字筛选,多个关键字用空格分隔,如:仙逆 S01E16" oninput="applyInboxFilter()"><button class="small grey" onclick="$('inboxfilter').value='';applyInboxFilter()">清除</button><span class="mut" id="inboxcount"></span></div>
 <div id="inboxlist"></div>
 <div id="inboxbtns" style="display:none">
 <div class="row" id="inboxselrow"></div>
@@ -2039,7 +2039,7 @@ function renderBatch(){
     +(mixed? (cloudOn('189')? '<button class="small grey" id="mixTy" onclick="applyMixSelection(\'ty\')">全选天翼</button> ' : '')+(cloudOn('139')? '<button class="small grey" id="mixMb" onclick="applyMixSelection(\'mb\')">全选移动</button> ' : '') : '')
     +'<button class="small grey" onclick="batchAll(false)">全不选</button> <span class=mut>共 '+batchItems.length+' 份 cas(仅还原已勾选的)</span>'
     +(mixed? ' <span class=mut id="mixNote">含天翼版与移动版 CAS,须分开还原</span>' : '')+'</div>' : '';
-  const filterRow = batchItems.length? '<div class="row" style="margin:6px 0"><input id="batchfilter" class="grow" placeholder="输入关键字筛选,如:仙逆 / S01E16" value="'+esc(batchKw)+'" oninput="batchKw=this.value;applyBatchFilter()"><button class="small grey" onclick="batchKw=\'\';renderBatch()">清除</button><span class="mut" id="batchcount"></span></div>' : '';
+  const filterRow = batchItems.length? '<div class="row" style="margin:6px 0"><input id="batchfilter" class="grow" placeholder="输入关键字筛选,多个关键字用空格分隔,如:仙逆 S01E16" value="'+esc(batchKw)+'" oninput="batchKw=this.value;applyBatchFilter()"><button class="small grey" onclick="batchKw=\'\';renderBatch()">清除</button><span class="mut" id="batchcount"></span></div>' : '';
   $('inspect').innerHTML = head + filterRow + batchItems.map((it,i)=>
     it.info? '<div data-kw="'+esc(it.info.name+' '+(it.src||''))+'"><label><input type="checkbox" class="itchk" data-i="'+i+'" style="width:auto"'+(it.checked? ' checked':'')+' onchange="syncBatchAll()"> 📄 '+esc(it.info.name)+'</label> <span class=mut>'+esc(it.info.kind)+' · '+esc(it.info.size)+' 字节</span> <span id="st'+i+'"></span>'+
       ' <button class="small grey" onclick="renameStart('+i+')">重命名</button>'+

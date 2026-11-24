@@ -1319,6 +1319,11 @@ def main():
           and 'onclick="batchAll(false)"' in html
           and 'id="batchall"' not in html, "")
 
+    # iii) 筛选提示词写明空格分隔,不用斜杠(v2.25.1)
+    html = cw2.INDEX_HTML
+    check("筛选提示词无斜杠误导", "多个关键字用空格分隔" in html
+          and "仙逆 / S01E16" not in html, "")
+
     # g) 还原到天翼(经 mock OpenList 种子接口)
     st, d, _ = req("POST", base + "/api/restore189",
                    {"cas_b64": base64.b64encode(cas_bytes).decode(),
